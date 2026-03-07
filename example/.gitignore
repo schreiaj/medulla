@@ -1,0 +1,4 @@
+
+# Medulla: Local working memory and caches
+.medulla/musings.ndjson
+.medulla/brain.parquet

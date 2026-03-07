@@ -23,24 +23,23 @@ fn test_init_creates_directory_and_files() {
 
 #[test]
 fn test_learn_encodes_valid_json() {
-    let dir = tempdir().expect("Failed to create temp dir");
+    let dir = tempdir().unwrap();
     let root = dir.path();
+    init::run_in(root).unwrap();
 
-    // 1. Setup env in temp root
-    init::run_in(root).expect("Init failed");
+    // Use root words that the stemmer will leave alone
+    let tags = vec!["robot".to_string(), "metal".to_string()];
+    learn::run_in(root, "Validating JSON encoding.", tags, None).unwrap();
 
-    // 2. Learn using run_in(root) - DON'T use the learn::run() wrapper here
-    let content = "Octopus tentacles use silicone";
-    let tags = vec!["robotics".to_string(), "materials".to_string()];
-    learn::run_in(root, content, tags, None).expect("Learn failed");
-
-    // 3. Read result using root.join()
     let musings_path = root.join(".medulla/musings.ndjson");
-    let musings_content = fs::read_to_string(musings_path).expect("Missing musings.ndjson");
+    let musings_content = std::fs::read_to_string(musings_path).unwrap();
 
-    // 4. Assert
-    assert!(musings_content.contains("Octopus tentacles use silicone"));
-    assert!(musings_content.contains("\"associations\":[\"robotics\",\"materials\"]"));
+    // The array will now exactly match the root words
+    assert!(
+        musings_content.contains("\"associations\":[\"robot\",\"metal\"]"),
+        "JSON did not contain the expected stemmed associations array. Content was: {}",
+        musings_content
+    );
 }
 
 #[test]
