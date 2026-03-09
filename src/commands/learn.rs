@@ -2,9 +2,12 @@ use chrono::Utc;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::sync::OnceLock;
 use sha2::{Sha256, Digest};
 use anyhow::Result;
 use rust_stemmers::{Algorithm, Stemmer};
+
+static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
 use crate::core::MemoryEntry;
 
@@ -18,7 +21,7 @@ pub fn run_in(root: &Path, content: &str, tags: Vec<String>, custom_id: Option<S
         format!("{:x}", hasher.finalize())[..12].to_string()
     });
 
-    let en_stemmer = Stemmer::create(Algorithm::English);
+    let en_stemmer = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
 
     // Split, trim, lowercase, and STEM the tags
     let parsed_tags: Vec<String> = tags
@@ -37,7 +40,7 @@ pub fn run_in(root: &Path, content: &str, tags: Vec<String>, custom_id: Option<S
         timestamp: now_ms,
         confidence: 0.5,
         associations: parsed_tags,
-        access_count: 1,
+        access_count: 0,
         last_access: now_ms,
     };
 

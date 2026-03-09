@@ -271,7 +271,7 @@ fn test_recency_bias_and_reconstruction() {
             .column("weight_log").unwrap()
             .f64().unwrap()
             .get(0)
-            .expect(&format!("Synapse for {} not found", tag))
+            .unwrap_or_else(|| panic!("Synapse for {} not found", tag))
     };
 
     let w_soft = get_weight(&df, "soft");
@@ -306,7 +306,7 @@ fn test_query_reinforces_memory() {
     let initial_content = fs::read_to_string(&musings_path).unwrap();
     let initial_entry: MemoryEntry = serde_json::from_str(initial_content.trim()).unwrap();
 
-    assert_eq!(initial_entry.access_count, 1, "Memory should start with an access count of 1.");
+    assert_eq!(initial_entry.access_count, 0, "Memory should start with an access count of 0.");
     let initial_time = initial_entry.last_access;
 
     // Sleep for 10 milliseconds to ensure the Unix timestamp definitely ticks forward
@@ -322,8 +322,8 @@ fn test_query_reinforces_memory() {
     let final_entry: MemoryEntry = serde_json::from_str(final_content.trim()).unwrap();
 
     assert_eq!(
-        final_entry.access_count, 2,
-        "Access count failed to increment. Expected 2, got {}.", final_entry.access_count
+        final_entry.access_count, 1,
+        "Access count failed to increment. Expected 1, got {}.", final_entry.access_count
     );
 
     assert!(

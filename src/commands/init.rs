@@ -20,12 +20,12 @@ pub fn run_in(root: &Path) -> Result<()> {
         ".medulla/brain.parquet",
     ];
 
+    let current_gitignore = fs::read_to_string(&gitignore_path).unwrap_or_default();
+
     let mut gitignore_file = fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(&gitignore_path)?;
-
-    let current_gitignore = fs::read_to_string(&gitignore_path).unwrap_or_default();
 
     for entry in ignore_entries {
         if !current_gitignore.contains(entry.trim()) {

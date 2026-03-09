@@ -6,11 +6,14 @@ use std::time::SystemTime;
 use anyhow::{Result, Context};
 use tabled::{Table, Tabled, settings::Style};
 use rust_stemmers::{Algorithm, Stemmer};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use chrono::Utc;
 
 // Make sure your core module is accessible for MemoryEntry
 use crate::core::MemoryEntry;
+
+static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
 #[derive(Tabled)]
 struct MemoryRow {
@@ -65,19 +68,18 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
     let mut file = File::open(&brain_path)?;
     let df_brain = ParquetReader::new(&mut file).finish()?;
 
-    let en_stemmer = Stemmer::create(Algorithm::English);
     let pattern_lowered = pattern.to_lowercase();
-    let pattern_stemmed = en_stemmer.stem(&pattern_lowered).to_string();
+    let pattern_stemmed = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English))
+        .stem(&pattern_lowered).to_string();
 
-    // 2. Search Logic
-    let filtered_lf = df_brain.lazy()
+    // 2. Search Logic — collect once, slice for display
+    let all_results = df_brain.lazy()
         .filter(
             col("content").str().to_lowercase().str().contains(lit(pattern_stemmed.clone()), false)
             .or(col("associations").list().contains(lit(pattern_stemmed.clone()), false))
         )
-        .sort(["activation"], SortMultipleOptions::default().with_order_descending(true));
-
-    let all_results = filtered_lf.clone().collect()?;
+        .sort(["activation"], SortMultipleOptions::default().with_order_descending(true))
+        .collect()?;
 
     if all_results.height() == 0 {
         println!("No memories found matching '{}' (stemmed as '{}').", pattern, pattern_stemmed);
@@ -85,8 +87,8 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
     }
 
     // Limit the results actually shown (and therefore "accessed")
-    let display_results = filtered_lf.limit(limit as u32).collect()?;
-    render_memories(&display_results);
+    let display_results = all_results.head(Some(limit));
+    render_memories(&display_results)?;
 
     // 3. Reinforce the accessed memories in the source of truth
     reinforce_memories(root, &display_results)?;
@@ -100,7 +102,7 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
         let found_tags_col = all_results.column("associations")?.explode(explode_opts)?;
         let found_tags = found_tags_col.as_materialized_series().clone();
 
-        render_suggestions(&df_syn, found_tags, &pattern_stemmed)?;
+        render_suggestions(df_syn, found_tags, &pattern_stemmed)?;
     }
 
     Ok(())
@@ -109,7 +111,7 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
 // Write-back function to increment access frequency and reset recency
 fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
     let ids_col = displayed_df.column("id")?.str()?;
-    let accessed_ids: Vec<&str> = ids_col.into_no_null_iter().collect();
+    let accessed_ids: HashSet<&str> = ids_col.into_no_null_iter().collect();
 
     if accessed_ids.is_empty() { return Ok(()); }
 
@@ -128,7 +130,7 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
         let mut entry: MemoryEntry = serde_json::from_str(&line_str)
             .with_context(|| format!("Failed to parse line: {}", line_str))?;
 
-        if accessed_ids.contains(&entry.id.as_str()) {
+        if accessed_ids.contains(entry.id.as_str()) {
             entry.access_count += 1;
             entry.last_access = now_ms;
             updated = true;
@@ -147,21 +149,21 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
     Ok(())
 }
 
-fn render_memories(df: &DataFrame) {
-    let ids = df.column("id").unwrap().str().unwrap();
-    let contents = df.column("content").unwrap().str().unwrap();
-    let activations = df.column("activation").unwrap().f64().unwrap();
-    let associations = df.column("associations").unwrap().list().unwrap();
+fn render_memories(df: &DataFrame) -> Result<()> {
+    let ids = df.column("id")?.str()?;
+    let contents = df.column("content")?.str()?;
+    let activations = df.column("activation")?.f64()?;
+    let associations = df.column("associations")?.list()?;
 
     let mut rows = Vec::new();
     for i in 0..df.height() {
-        let tags_series = associations.get_as_series(i).unwrap();
-        let tags_str = tags_series.str().unwrap().into_no_null_iter().collect::<Vec<_>>().join(", ");
+        let tags_series = associations.get_as_series(i).context("Missing associations series")?;
+        let tags_str = tags_series.str()?.into_no_null_iter().collect::<Vec<_>>().join(", ");
 
         rows.push(MemoryRow {
-            id: ids.get(i).unwrap().to_string(),
-            content: contents.get(i).unwrap().to_string(),
-            activation: activations.get(i).unwrap(),
+            id: ids.get(i).context("Missing id value")?.to_string(),
+            content: contents.get(i).context("Missing content value")?.to_string(),
+            activation: activations.get(i).context("Missing activation value")?,
             tags: tags_str,
         });
     }
@@ -170,13 +172,14 @@ fn render_memories(df: &DataFrame) {
     let mut table = Table::new(rows);
     table.with(Style::rounded());
     println!("{}", table);
+    Ok(())
 }
 
-fn render_suggestions(df_syn: &DataFrame, found_tags: Series, pattern_stemmed: &str) -> Result<()> {
+fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &str) -> Result<()> {
     let tag_series = found_tags.unique()?;
     let tag_list_series = tag_series.implode()?.into_series();
 
-    let suggestions = df_syn.clone().lazy()
+    let suggestions = df_syn.lazy()
         .filter(
             col("tag_a").is_in(lit(tag_list_series.clone()), false)
             .or(col("tag_b").is_in(lit(tag_list_series), false))

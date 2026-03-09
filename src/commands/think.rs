@@ -5,6 +5,9 @@ use std::f64::consts::E; // Added for convenience
 use chrono::Utc;
 use anyhow::{Result, Context};
 
+const DECAY_RATE: f64 = 0.5;
+const LEARNING_RATE: f64 = 0.1;
+
 pub fn run() -> Result<()> {
     run_in(Path::new("."))?;
     println!("✔ Brain consolidated. Recency bias and Hebbian synapses updated.");
@@ -26,14 +29,12 @@ fn consolidate_entries(root: &Path, now_ms: i64) -> Result<()> {
     let path_str = musings_path.to_string_lossy();
     let lf = LazyJsonLineReader::new(path_str.as_ref().into()).finish()?;
 
-    let d = 0.5;
-
     let processed_lf = lf
         .with_column(
             (
                 ((lit(now_ms) - col("timestamp")).cast(DataType::Float64) / lit(1000.0) + lit(1.0))
-                .pow(lit(-d))
-                .log(lit(E)) // Fix: Wrapped E in lit()
+                .pow(lit(-DECAY_RATE))
+                .log(lit(E))
             ).alias("activation")
         )
         .sort(["id", "timestamp"], SortMultipleOptions::default().with_order_descending(true))
@@ -69,15 +70,19 @@ pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
         keep_nulls: false,
     };
 
-    let left = lf_musings.clone()
-        .filter(col("associations").list().len().gt(lit(1)))
-        .explode(explode_sel.clone(), explode_opts)
-        .rename(["associations"], ["tag_a"], true);
-
-    let right = lf_musings
+    // Materialize once to avoid reading musings.ndjson twice for the self-join
+    let base_df = lf_musings
         .filter(col("associations").list().len().gt(lit(1)))
         .explode(explode_sel, explode_opts)
+        .collect()?;
+
+    let left = base_df.clone().lazy()
+        .rename(["associations"], ["tag_a"], true);
+
+    let right = base_df.lazy()
         .rename(["associations"], ["tag_b"], true);
+
+    let log_inc = (1.0 + LEARNING_RATE).ln();
 
     let signals = left.join(
         right,
@@ -92,17 +97,13 @@ pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
         col("timestamp").max().alias("last_seen")
     ]);
 
-    let learning_rate: f64 = 0.1;
-    let log_inc = (1.0 + learning_rate).ln();
-    let d = 0.5;
-
     let mut final_synapses = signals
         .with_column(
             (
                 (col("signal_count").cast(DataType::Float64) * lit(log_inc))
                 - (
                     ((lit(now_ms) - col("last_seen")).cast(DataType::Float64) / lit(1000.0) + lit(1.0))
-                    .log(lit(E)) * lit(d) // Fix: Wrapped E in lit()
+                    .log(lit(E)) * lit(DECAY_RATE)
                 )
             ).alias("weight_log")
         )
