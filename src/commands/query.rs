@@ -1,9 +1,16 @@
 use polars::prelude::*;
 use std::path::Path;
-use anyhow::Result;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::time::SystemTime;
+use anyhow::{Result, Context};
 use tabled::{Table, Tabled, settings::Style};
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::HashMap;
+use chrono::Utc;
+
+// Make sure your core module is accessible for MemoryEntry
+use crate::core::MemoryEntry;
 
 #[derive(Tabled)]
 struct MemoryRow {
@@ -30,22 +37,39 @@ pub fn run(pattern: &str, limit: usize) -> Result<()> {
 }
 
 pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
+    let musings_path = root.join(".medulla/musings.ndjson");
     let brain_path = root.join(".medulla/brain.parquet");
     let synapses_path = root.join(".medulla/synapses.parquet");
 
-    if !brain_path.exists() {
-        println!("The brain is empty. Run 'med think' first.");
+    if !musings_path.exists() {
+        println!("The mind is blank. Run 'med learn' to add memories.");
         return Ok(());
     }
 
-    let mut file = std::fs::File::open(brain_path)?;
+    // 1. Auto-Consolidation Check
+    let needs_update = if !brain_path.exists() {
+        true
+    } else {
+        let m_meta = fs::metadata(&musings_path)?;
+        let b_meta = fs::metadata(&brain_path)?;
+        let m_time = m_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let b_time = b_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        m_time > b_time
+    };
+
+    if needs_update {
+        println!("[MED] Processing new experiences before querying...");
+        crate::commands::think::run_in(root)?;
+    }
+
+    let mut file = File::open(&brain_path)?;
     let df_brain = ParquetReader::new(&mut file).finish()?;
 
     let en_stemmer = Stemmer::create(Algorithm::English);
     let pattern_lowered = pattern.to_lowercase();
     let pattern_stemmed = en_stemmer.stem(&pattern_lowered).to_string();
 
-    // Search both Content and Tags
+    // 2. Search Logic
     let filtered_lf = df_brain.lazy()
         .filter(
             col("content").str().to_lowercase().str().contains(lit(pattern_stemmed.clone()), false)
@@ -53,7 +77,6 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
         )
         .sort(["activation"], SortMultipleOptions::default().with_order_descending(true));
 
-    // FIX 1: Collect ALL matching memories to build a complete associative map
     let all_results = filtered_lf.clone().collect()?;
 
     if all_results.height() == 0 {
@@ -61,22 +84,64 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
         return Ok(());
     }
 
-    // Apply the display limit only for the rendered table
+    // Limit the results actually shown (and therefore "accessed")
     let display_results = filtered_lf.limit(limit as u32).collect()?;
     render_memories(&display_results);
 
-    // Render Hebbian Suggestions based on ALL matching data
+    // 3. Reinforce the accessed memories in the source of truth
+    reinforce_memories(root, &display_results)?;
+
+    // 4. Render Hebbian Suggestions
     if synapses_path.exists() {
-        let mut syn_file = std::fs::File::open(synapses_path)?;
+        let mut syn_file = File::open(&synapses_path)?;
         let df_syn = ParquetReader::new(&mut syn_file).finish()?;
 
         let explode_opts = ExplodeOptions { empty_as_null: true, keep_nulls: false };
-
-        // Extract tags from all_results, not display_results
         let found_tags_col = all_results.column("associations")?.explode(explode_opts)?;
         let found_tags = found_tags_col.as_materialized_series().clone();
 
         render_suggestions(&df_syn, found_tags, &pattern_stemmed)?;
+    }
+
+    Ok(())
+}
+
+// Write-back function to increment access frequency and reset recency
+fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
+    let ids_col = displayed_df.column("id")?.str()?;
+    let accessed_ids: Vec<&str> = ids_col.into_no_null_iter().collect();
+
+    if accessed_ids.is_empty() { return Ok(()); }
+
+    let musings_path = root.join(".medulla/musings.ndjson");
+    let file = File::open(&musings_path)?;
+    let reader = BufReader::new(file);
+
+    let mut entries: Vec<MemoryEntry> = Vec::new();
+    let mut updated = false;
+    let now_ms = Utc::now().timestamp_millis();
+
+    for line in reader.lines() {
+        let line_str = line?;
+        if line_str.trim().is_empty() { continue; }
+
+        let mut entry: MemoryEntry = serde_json::from_str(&line_str)
+            .with_context(|| format!("Failed to parse line: {}", line_str))?;
+
+        if accessed_ids.contains(&entry.id.as_str()) {
+            entry.access_count += 1;
+            entry.last_access = now_ms;
+            updated = true;
+        }
+        entries.push(entry);
+    }
+
+    // If we altered any memories, overwrite the source of truth
+    if updated {
+        let mut out_file = File::create(&musings_path)?;
+        for entry in entries {
+            writeln!(out_file, "{}", serde_json::to_string(&entry)?)?;
+        }
     }
 
     Ok(())
@@ -111,7 +176,6 @@ fn render_suggestions(df_syn: &DataFrame, found_tags: Series, pattern_stemmed: &
     let tag_series = found_tags.unique()?;
     let tag_list_series = tag_series.implode()?.into_series();
 
-    // Fetch ALL connections involving our found tags. No blind-spot filter here.
     let suggestions = df_syn.clone().lazy()
         .filter(
             col("tag_a").is_in(lit(tag_list_series.clone()), false)
@@ -124,7 +188,6 @@ fn render_suggestions(df_syn: &DataFrame, found_tags: Series, pattern_stemmed: &
         let tag_b = suggestions.column("tag_b")?.str()?;
         let weights = suggestions.column("weight_log")?.f64()?;
 
-        // FIX 2: Manually map the "other" side of the synapse
         let mut concept_map: HashMap<String, f64> = HashMap::new();
 
         for i in 0..suggestions.height() {
@@ -142,7 +205,6 @@ fn render_suggestions(df_syn: &DataFrame, found_tags: Series, pattern_stemmed: &
             }
         }
 
-        // Sort by strength descending
         let mut sorted_concepts: Vec<_> = concept_map.into_iter().collect();
         sorted_concepts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 

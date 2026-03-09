@@ -280,3 +280,54 @@ fn test_recency_bias_and_reconstruction() {
     println!("Soft weight: {:.4}, Heavy weight: {:.4}", w_soft, w_heavy);
     assert!(w_soft > w_heavy, "Recency bias failed: New (n=2) should outrank Old (n=5)");
 }
+
+#[test]
+fn test_query_reinforces_memory() {
+    use std::fs;
+    use std::thread;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use med::commands::{init, learn, query};
+    use med::core::MemoryEntry;
+
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // 1. Initialize the blank slate
+    init::run_in(root).unwrap();
+
+    // 2. Learn a new fact
+    let tags = vec!["robot".to_string()];
+    learn::run_in(root, "Testing the memory reinforcement loop.", tags, None).unwrap();
+
+    let musings_path = root.join(".medulla/musings.ndjson");
+
+    // 3. Capture the initial state of the memory
+    let initial_content = fs::read_to_string(&musings_path).unwrap();
+    let initial_entry: MemoryEntry = serde_json::from_str(initial_content.trim()).unwrap();
+
+    assert_eq!(initial_entry.access_count, 1, "Memory should start with an access count of 1.");
+    let initial_time = initial_entry.last_access;
+
+    // Sleep for 10 milliseconds to ensure the Unix timestamp definitely ticks forward
+    thread::sleep(Duration::from_millis(10));
+
+    // 4. Query the fact
+    // (Because brain.parquet doesn't exist yet, query::run_in will automatically
+    // trigger think::run_in, run the search, and then reinforce the NDJSON)
+    query::run_in(root, "robot", 5).unwrap();
+
+    // 5. Verify the cognitive weights shifted
+    let final_content = fs::read_to_string(&musings_path).unwrap();
+    let final_entry: MemoryEntry = serde_json::from_str(final_content.trim()).unwrap();
+
+    assert_eq!(
+        final_entry.access_count, 2,
+        "Access count failed to increment. Expected 2, got {}.", final_entry.access_count
+    );
+
+    assert!(
+        final_entry.last_access > initial_time,
+        "Last access timestamp did not update. Initial: {}, Final: {}", initial_time, final_entry.last_access
+    );
+}
