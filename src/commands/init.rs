@@ -20,7 +20,11 @@ pub fn run_in(root: &Path) -> Result<()> {
         ".medulla/brain.parquet",
     ];
 
-    let current_gitignore = fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let current_gitignore = match fs::read_to_string(&gitignore_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
 
     let mut gitignore_file = fs::OpenOptions::new()
         .append(true)
@@ -43,12 +47,17 @@ This repository uses Medulla (`med`) for cognitive memory.
 - **Syncing**: Run `med consolidate` before pushing your branch.
 "#;
 
+    let current_agents_md = match fs::read_to_string(&agents_md_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+
     let mut agents_file = fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(&agents_md_path)?;
 
-    let current_agents_md = fs::read_to_string(&agents_md_path).unwrap_or_default();
     if !current_agents_md.contains("Medulla Memory Protocol") {
         writeln!(agents_file, "{}", protocol)?;
     }

@@ -4,21 +4,34 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::OnceLock;
 use sha2::{Sha256, Digest};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rust_stemmers::{Algorithm, Stemmer};
+
+use crate::core::{MemoryEntry, lock_musings};
 
 static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
-use crate::core::MemoryEntry;
+const MAX_CONTENT_LENGTH: usize = 10_000;
+const MAX_TAGS: usize = 50;
 
 pub fn run_in(root: &Path, content: &str, tags: Vec<String>, custom_id: Option<String>) -> Result<()> {
+    if content.trim().is_empty() {
+        bail!("Content cannot be empty");
+    }
+    if content.len() > MAX_CONTENT_LENGTH {
+        bail!("Content exceeds maximum length of {} characters", MAX_CONTENT_LENGTH);
+    }
+    if tags.len() > MAX_TAGS {
+        bail!("Too many tags: {} provided, maximum is {}", tags.len(), MAX_TAGS);
+    }
+
     let musings_path = root.join(".medulla/musings.ndjson");
     let now_ms = Utc::now().timestamp_millis();
 
     let id = custom_id.unwrap_or_else(|| {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
-        format!("{:x}", hasher.finalize())[..12].to_string()
+        format!("{:x}", hasher.finalize())[..16].to_string()
     });
 
     let en_stemmer = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
@@ -38,11 +51,13 @@ pub fn run_in(root: &Path, content: &str, tags: Vec<String>, custom_id: Option<S
         id,
         content: content.to_string(),
         timestamp: now_ms,
-        confidence: 0.5,
         associations: parsed_tags,
         access_count: 0,
         last_access: now_ms,
     };
+
+    // Hold exclusive lock for the duration of the append
+    let _lock = lock_musings(&musings_path, true)?;
 
     let mut file = OpenOptions::new()
         .create(true)

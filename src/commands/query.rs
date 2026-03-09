@@ -10,8 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use chrono::Utc;
 
-// Make sure your core module is accessible for MemoryEntry
-use crate::core::MemoryEntry;
+use crate::core::{MemoryEntry, lock_musings};
 
 static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
@@ -116,10 +115,14 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
     if accessed_ids.is_empty() { return Ok(()); }
 
     let musings_path = root.join(".medulla/musings.ndjson");
+
+    // Exclusive lock: prevent concurrent learn/think from racing this read-modify-write
+    let _lock = lock_musings(&musings_path, true)?;
+
     let file = File::open(&musings_path)?;
     let reader = BufReader::new(file);
 
-    let mut entries: Vec<MemoryEntry> = Vec::new();
+    let mut lines_out: Vec<String> = Vec::new();
     let mut updated = false;
     let now_ms = Utc::now().timestamp_millis();
 
@@ -127,23 +130,34 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
         let line_str = line?;
         if line_str.trim().is_empty() { continue; }
 
-        let mut entry: MemoryEntry = serde_json::from_str(&line_str)
-            .with_context(|| format!("Failed to parse line: {}", line_str))?;
-
-        if accessed_ids.contains(entry.id.as_str()) {
-            entry.access_count += 1;
-            entry.last_access = now_ms;
-            updated = true;
-        }
-        entries.push(entry);
+        let new_line = match serde_json::from_str::<MemoryEntry>(&line_str) {
+            Ok(mut entry) => {
+                if accessed_ids.contains(entry.id.as_str()) {
+                    entry.access_count += 1;
+                    entry.last_access = now_ms;
+                    updated = true;
+                    serde_json::to_string(&entry)?
+                } else {
+                    line_str
+                }
+            }
+            // Preserve lines we can't parse (e.g., newer schema versions) rather
+            // than aborting or silently dropping data.
+            Err(_) => line_str,
+        };
+        lines_out.push(new_line);
     }
 
-    // If we altered any memories, overwrite the source of truth
     if updated {
-        let mut out_file = File::create(&musings_path)?;
-        for entry in entries {
-            writeln!(out_file, "{}", serde_json::to_string(&entry)?)?;
+        // Atomic write: write to a temp file then rename so a crash mid-write
+        // never leaves musings.ndjson in a partial/corrupt state.
+        let tmp_path = musings_path.with_extension("tmp");
+        let mut out_file = File::create(&tmp_path)?;
+        for line in &lines_out {
+            writeln!(out_file, "{}", line)?;
         }
+        drop(out_file);
+        fs::rename(&tmp_path, &musings_path)?;
     }
 
     Ok(())

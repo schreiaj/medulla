@@ -1,7 +1,7 @@
 use polars::prelude::*;
 use std::path::Path;
-use std::fs::File;
-use std::f64::consts::E; // Added for convenience
+use std::fs::{self, File};
+use std::f64::consts::E;
 use chrono::Utc;
 use anyhow::{Result, Context};
 
@@ -16,6 +16,16 @@ pub fn run() -> Result<()> {
 
 pub fn run_in(root: &Path) -> Result<()> {
     let now_ms = Utc::now().timestamp_millis();
+    let musings_path = root.join(".medulla/musings.ndjson");
+
+    // Hold a shared lock for the full consolidation to prevent concurrent writes
+    // from learn/reinforce_memories corrupting the snapshot we're reading.
+    let _lock = if musings_path.exists() {
+        Some(crate::core::lock_musings(&musings_path, false)?)
+    } else {
+        None
+    };
+
     consolidate_entries(root, now_ms)?;
     update_synapses(root, now_ms)?;
     Ok(())
@@ -47,8 +57,11 @@ fn consolidate_entries(root: &Path, now_ms: i64) -> Result<()> {
         );
 
     let mut df = processed_lf.collect()?;
-    let mut file = File::create(brain_path)?;
+    let brain_tmp = brain_path.with_extension("tmp");
+    let mut file = File::create(&brain_tmp)?;
     ParquetWriter::new(&mut file).finish(&mut df)?;
+    drop(file);
+    fs::rename(&brain_tmp, &brain_path)?;
     Ok(())
 }
 
@@ -115,8 +128,11 @@ pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
         ])
         .collect()?;
 
-    let mut file = File::create(&synapses_path)?;
+    let syn_tmp = synapses_path.with_extension("tmp");
+    let mut file = File::create(&syn_tmp)?;
     ParquetWriter::new(&mut file).finish(&mut final_synapses)?;
+    drop(file);
+    fs::rename(&syn_tmp, &synapses_path)?;
 
     Ok(())
 }
