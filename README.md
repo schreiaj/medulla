@@ -55,7 +55,7 @@ Key protocol rules for agents:
 - Record new findings with `med learn` during a session
 - Run `med think` to consolidate before ending a session
 
-See [`example/AGENTS.md`](example/AGENTS.md) for the full agent protocol.
+See [`src/templates/AGENTS.md`](src/templates/AGENTS.md) for the full agent protocol.
 
 ## Data files
 
