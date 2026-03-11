@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use anyhow::{Result, Context};
-use fs2::FileExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MemoryEntry {
@@ -43,9 +43,13 @@ pub fn lock_musings(musings_path: &Path, exclusive: bool) -> Result<fs::File> {
         .open(&lock_path)
         .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
     if exclusive {
-        lock_file.lock_exclusive().context("Failed to acquire exclusive lock on musings")?;
+        lock_file
+            .lock_exclusive()
+            .context("Failed to acquire exclusive lock on musings")?;
     } else {
-        lock_file.lock_shared().context("Failed to acquire shared lock on musings")?;
+        lock_file
+            .lock_shared()
+            .context("Failed to acquire shared lock on musings")?;
     }
     Ok(lock_file)
 }

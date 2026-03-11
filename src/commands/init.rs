@@ -1,7 +1,7 @@
+use anyhow::Result;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use anyhow::Result;
 
 /// Internal logic that accepts a root path (essential for parallel testing)
 pub fn run_in(root: &Path) -> Result<()> {

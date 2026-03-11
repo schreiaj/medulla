@@ -1,11 +1,11 @@
+use anyhow::{Result, bail};
 use chrono::Utc;
+use rust_stemmers::{Algorithm, Stemmer};
+use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::sync::OnceLock;
-use sha2::{Sha256, Digest};
-use anyhow::{Result, bail};
-use rust_stemmers::{Algorithm, Stemmer};
 
 use crate::core::{MemoryEntry, lock_musings};
 
@@ -14,15 +14,27 @@ static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 const MAX_CONTENT_LENGTH: usize = 10_000;
 const MAX_TAGS: usize = 50;
 
-pub fn run_in(root: &Path, content: &str, tags: Vec<String>, custom_id: Option<String>) -> Result<()> {
+pub fn run_in(
+    root: &Path,
+    content: &str,
+    tags: Vec<String>,
+    custom_id: Option<String>,
+) -> Result<()> {
     if content.trim().is_empty() {
         bail!("Content cannot be empty");
     }
     if content.len() > MAX_CONTENT_LENGTH {
-        bail!("Content exceeds maximum length of {} characters", MAX_CONTENT_LENGTH);
+        bail!(
+            "Content exceeds maximum length of {} characters",
+            MAX_CONTENT_LENGTH
+        );
     }
     if tags.len() > MAX_TAGS {
-        bail!("Too many tags: {} provided, maximum is {}", tags.len(), MAX_TAGS);
+        bail!(
+            "Too many tags: {} provided, maximum is {}",
+            tags.len(),
+            MAX_TAGS
+        );
     }
 
     let musings_path = root.join(".medulla/musings.ndjson");

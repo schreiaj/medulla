@@ -1,9 +1,9 @@
-use tempfile::tempdir;
+use chrono::{Duration, Utc};
 use med::commands::{init, learn, think};
-use std::fs;
 use polars::prelude::*;
-use chrono::{Utc, Duration};
+use std::fs;
 use std::io::Write;
+use tempfile::tempdir;
 
 #[test]
 fn test_init_creates_directory_and_files() {
@@ -60,7 +60,6 @@ fn test_think_generates_parquet_with_activation() {
     assert!(root.join(".medulla/brain.parquet").exists());
 }
 
-
 #[test]
 fn test_think_handles_missing_musings() {
     let dir = tempdir().unwrap();
@@ -108,7 +107,6 @@ fn test_act_r_activation_sorting() {
     // 1. Learn something "old" (we'll simulate time by sleeping or just letting it exist)
     learn::run_in(root, "Old Memory", vec![], None).unwrap();
 
-
     // 2. Learn something "new"
     learn::run_in(root, "New Memory", vec![], None).unwrap();
 
@@ -119,7 +117,12 @@ fn test_act_r_activation_sorting() {
     let df = ParquetReader::new(&mut file).finish().unwrap();
 
     // Sort by activation descending to see what's "on top"
-    let sorted_df = df.sort(["activation"], SortMultipleOptions::default().with_order_descending(true)).unwrap();
+    let sorted_df = df
+        .sort(
+            ["activation"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
+        .unwrap();
 
     let content_series = sorted_df.column("content").unwrap().str().unwrap();
 
@@ -127,7 +130,6 @@ fn test_act_r_activation_sorting() {
     assert_eq!(content_series.get(0).unwrap(), "New Memory");
     assert_eq!(content_series.get(1).unwrap(), "Old Memory");
 }
-
 
 // In tests/integration.rs
 #[test]
@@ -146,7 +148,13 @@ fn test_hebbian_association_strengthening() {
     let mut file = std::fs::File::open(root.join(".medulla/synapses.parquet")).unwrap();
     let df = ParquetReader::new(&mut file).finish().unwrap();
 
-    let weight = df.column("weight_log").unwrap().f64().unwrap().get(0).unwrap();
+    let weight = df
+        .column("weight_log")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .get(0)
+        .unwrap();
 
     // The implementation now does: (count * log_inc) - (log(dt + 1) * d)
     // In a test running instantly, dt is ~0, so log(1) * 0.5 is ~0.
@@ -178,7 +186,13 @@ fn test_hebbian_reconstruction_from_musings() {
     let df = ParquetReader::new(&mut file).finish().unwrap();
 
     assert!(df.height() > 0);
-    let weight = df.column("weight_log").unwrap().f64().unwrap().get(0).unwrap();
+    let weight = df
+        .column("weight_log")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .get(0)
+        .unwrap();
     let expected = (1.1f64).ln() * 2.0;
     assert!((weight - expected).abs() < 0.01);
 }
@@ -216,7 +230,6 @@ fn test_full_cognitive_loop_octopus_robotics() {
     // via the shared 'silicone' tag.
     assert!(df.height() >= 1);
 }
-
 
 #[test]
 fn test_recency_bias_and_reconstruction() {
@@ -265,11 +278,16 @@ fn test_recency_bias_and_reconstruction() {
     let df = ParquetReader::new(&mut f).finish().unwrap();
 
     let get_weight = |df_ref: &DataFrame, tag: &str| {
-        df_ref.clone().lazy() // Shallow clone to avoid moving original df
+        df_ref
+            .clone()
+            .lazy() // Shallow clone to avoid moving original df
             .filter(col("tag_a").eq(lit(tag)).or(col("tag_b").eq(lit(tag))))
-            .collect().unwrap()
-            .column("weight_log").unwrap()
-            .f64().unwrap()
+            .collect()
+            .unwrap()
+            .column("weight_log")
+            .unwrap()
+            .f64()
+            .unwrap()
             .get(0)
             .unwrap_or_else(|| panic!("Synapse for {} not found", tag))
     };
@@ -278,17 +296,20 @@ fn test_recency_bias_and_reconstruction() {
     let w_heavy = get_weight(&df, "heavy");
 
     println!("Soft weight: {:.4}, Heavy weight: {:.4}", w_soft, w_heavy);
-    assert!(w_soft > w_heavy, "Recency bias failed: New (n=2) should outrank Old (n=5)");
+    assert!(
+        w_soft > w_heavy,
+        "Recency bias failed: New (n=2) should outrank Old (n=5)"
+    );
 }
 
 #[test]
 fn test_query_reinforces_memory() {
+    use med::commands::{init, learn, query};
+    use med::core::MemoryEntry;
     use std::fs;
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
-    use med::commands::{init, learn, query};
-    use med::core::MemoryEntry;
 
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -306,7 +327,10 @@ fn test_query_reinforces_memory() {
     let initial_content = fs::read_to_string(&musings_path).unwrap();
     let initial_entry: MemoryEntry = serde_json::from_str(initial_content.trim()).unwrap();
 
-    assert_eq!(initial_entry.access_count, 0, "Memory should start with an access count of 0.");
+    assert_eq!(
+        initial_entry.access_count, 0,
+        "Memory should start with an access count of 0."
+    );
     let initial_time = initial_entry.last_access;
 
     // Sleep for 10 milliseconds to ensure the Unix timestamp definitely ticks forward
@@ -323,11 +347,14 @@ fn test_query_reinforces_memory() {
 
     assert_eq!(
         final_entry.access_count, 1,
-        "Access count failed to increment. Expected 1, got {}.", final_entry.access_count
+        "Access count failed to increment. Expected 1, got {}.",
+        final_entry.access_count
     );
 
     assert!(
         final_entry.last_access > initial_time,
-        "Last access timestamp did not update. Initial: {}, Final: {}", initial_time, final_entry.last_access
+        "Last access timestamp did not update. Initial: {}, Final: {}",
+        initial_time,
+        final_entry.last_access
     );
 }

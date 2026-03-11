@@ -1,9 +1,9 @@
-use polars::prelude::*;
-use std::path::Path;
-use std::fs::{self, File};
-use std::f64::consts::E;
+use anyhow::{Context, Result};
 use chrono::Utc;
-use anyhow::{Result, Context};
+use polars::prelude::*;
+use std::f64::consts::E;
+use std::fs::{self, File};
+use std::path::Path;
 
 const DECAY_RATE: f64 = 0.5;
 const LEARNING_RATE: f64 = 0.1;
@@ -34,26 +34,30 @@ pub fn run_in(root: &Path) -> Result<()> {
 fn consolidate_entries(root: &Path, now_ms: i64) -> Result<()> {
     let musings_path = root.join(".medulla/musings.ndjson");
     let brain_path = root.join(".medulla/brain.parquet");
-    if !musings_path.exists() { return Ok(()); }
+    if !musings_path.exists() {
+        return Ok(());
+    }
 
     let path_str = musings_path.to_string_lossy();
     let lf = LazyJsonLineReader::new(path_str.as_ref().into()).finish()?;
 
     let processed_lf = lf
         .with_column(
-            (
-                ((lit(now_ms) - col("timestamp")).cast(DataType::Float64) / lit(1000.0) + lit(1.0))
+            (((lit(now_ms) - col("timestamp")).cast(DataType::Float64) / lit(1000.0) + lit(1.0))
                 .pow(lit(-DECAY_RATE))
-                .log(lit(E))
-            ).alias("activation")
+                .log(lit(E)))
+            .alias("activation"),
         )
-        .sort(["id", "timestamp"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["id", "timestamp"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .unique(
             Some(Selector::ByName {
                 names: vec!["id".into()].into(),
                 strict: true,
             }),
-            UniqueKeepStrategy::First
+            UniqueKeepStrategy::First,
         );
 
     let mut df = processed_lf.collect()?;
@@ -68,10 +72,13 @@ fn consolidate_entries(root: &Path, now_ms: i64) -> Result<()> {
 pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
     let musings_path = root.join(".medulla/musings.ndjson");
     let synapses_path = root.join(".medulla/synapses.parquet");
-    if !musings_path.exists() { return Ok(()); }
+    if !musings_path.exists() {
+        return Ok(());
+    }
 
     let path_str = musings_path.to_string_lossy();
-    let lf_musings = LazyJsonLineReader::new(path_str.as_ref().into()).finish()
+    let lf_musings = LazyJsonLineReader::new(path_str.as_ref().into())
+        .finish()
         .context("Failed to read musings for Hebbian reconstruction")?;
 
     let explode_sel = Selector::ByName {
@@ -89,42 +96,38 @@ pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
         .explode(explode_sel, explode_opts)
         .collect()?;
 
-    let left = base_df.clone().lazy()
+    let left = base_df
+        .clone()
+        .lazy()
         .rename(["associations"], ["tag_a"], true);
 
-    let right = base_df.lazy()
-        .rename(["associations"], ["tag_b"], true);
+    let right = base_df.lazy().rename(["associations"], ["tag_b"], true);
 
     let log_inc = (1.0 + LEARNING_RATE).ln();
 
-    let signals = left.join(
-        right,
-        [col("id")],
-        [col("id")],
-        JoinType::Inner.into()
-    )
-    .filter(col("tag_a").lt(col("tag_b")))
-    .group_by([col("tag_a"), col("tag_b")])
-    .agg([
-        len().alias("signal_count"),
-        col("timestamp").max().alias("last_seen")
-    ]);
+    let signals = left
+        .join(right, [col("id")], [col("id")], JoinType::Inner.into())
+        .filter(col("tag_a").lt(col("tag_b")))
+        .group_by([col("tag_a"), col("tag_b")])
+        .agg([
+            len().alias("signal_count"),
+            col("timestamp").max().alias("last_seen"),
+        ]);
 
     let mut final_synapses = signals
         .with_column(
-            (
-                (col("signal_count").cast(DataType::Float64) * lit(log_inc))
-                - (
-                    ((lit(now_ms) - col("last_seen")).cast(DataType::Float64) / lit(1000.0) + lit(1.0))
-                    .log(lit(E)) * lit(DECAY_RATE)
-                )
-            ).alias("weight_log")
+            ((col("signal_count").cast(DataType::Float64) * lit(log_inc))
+                - (((lit(now_ms) - col("last_seen")).cast(DataType::Float64) / lit(1000.0)
+                    + lit(1.0))
+                .log(lit(E))
+                    * lit(DECAY_RATE)))
+            .alias("weight_log"),
         )
         .select([
             col("tag_a"),
             col("tag_b"),
             col("weight_log"),
-            col("last_seen")
+            col("last_seen"),
         ])
         .collect()?;
 

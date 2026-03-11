@@ -1,14 +1,14 @@
+use anyhow::{Context, Result};
+use chrono::Utc;
 use polars::prelude::*;
-use std::path::Path;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
-use std::time::SystemTime;
-use anyhow::{Result, Context};
-use tabled::{Table, Tabled, settings::Style};
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::sync::OnceLock;
-use chrono::Utc;
+use std::time::SystemTime;
+use tabled::{Table, Tabled, settings::Style};
 
 use crate::core::{MemoryEntry, lock_musings};
 
@@ -68,20 +68,35 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
     let df_brain = ParquetReader::new(&mut file).finish()?;
 
     let pattern_lowered = pattern.to_lowercase();
-    let pattern_stemmed = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English))
-        .stem(&pattern_lowered).to_string();
+    let pattern_stemmed = EN_STEMMER
+        .get_or_init(|| Stemmer::create(Algorithm::English))
+        .stem(&pattern_lowered)
+        .to_string();
 
     // 2. Search Logic — collect once, slice for display
-    let all_results = df_brain.lazy()
+    let all_results = df_brain
+        .lazy()
         .filter(
-            col("content").str().to_lowercase().str().contains(lit(pattern_stemmed.clone()), false)
-            .or(col("associations").list().contains(lit(pattern_stemmed.clone()), false))
+            col("content")
+                .str()
+                .to_lowercase()
+                .str()
+                .contains(lit(pattern_stemmed.clone()), false)
+                .or(col("associations")
+                    .list()
+                    .contains(lit(pattern_stemmed.clone()), false)),
         )
-        .sort(["activation"], SortMultipleOptions::default().with_order_descending(true))
+        .sort(
+            ["activation"],
+            SortMultipleOptions::default().with_order_descending(true),
+        )
         .collect()?;
 
     if all_results.height() == 0 {
-        println!("No memories found matching '{}' (stemmed as '{}').", pattern, pattern_stemmed);
+        println!(
+            "No memories found matching '{}' (stemmed as '{}').",
+            pattern, pattern_stemmed
+        );
         return Ok(());
     }
 
@@ -97,7 +112,10 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
         let mut syn_file = File::open(&synapses_path)?;
         let df_syn = ParquetReader::new(&mut syn_file).finish()?;
 
-        let explode_opts = ExplodeOptions { empty_as_null: true, keep_nulls: false };
+        let explode_opts = ExplodeOptions {
+            empty_as_null: true,
+            keep_nulls: false,
+        };
         let found_tags_col = all_results.column("associations")?.explode(explode_opts)?;
         let found_tags = found_tags_col.as_materialized_series().clone();
 
@@ -112,7 +130,9 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
     let ids_col = displayed_df.column("id")?.str()?;
     let accessed_ids: HashSet<&str> = ids_col.into_no_null_iter().collect();
 
-    if accessed_ids.is_empty() { return Ok(()); }
+    if accessed_ids.is_empty() {
+        return Ok(());
+    }
 
     let musings_path = root.join(".medulla/musings.ndjson");
 
@@ -128,7 +148,9 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
 
     for line in reader.lines() {
         let line_str = line?;
-        if line_str.trim().is_empty() { continue; }
+        if line_str.trim().is_empty() {
+            continue;
+        }
 
         let new_line = match serde_json::from_str::<MemoryEntry>(&line_str) {
             Ok(mut entry) => {
@@ -171,12 +193,21 @@ fn render_memories(df: &DataFrame) -> Result<()> {
 
     let mut rows = Vec::new();
     for i in 0..df.height() {
-        let tags_series = associations.get_as_series(i).context("Missing associations series")?;
-        let tags_str = tags_series.str()?.into_no_null_iter().collect::<Vec<_>>().join(", ");
+        let tags_series = associations
+            .get_as_series(i)
+            .context("Missing associations series")?;
+        let tags_str = tags_series
+            .str()?
+            .into_no_null_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
 
         rows.push(MemoryRow {
             id: ids.get(i).context("Missing id value")?.to_string(),
-            content: contents.get(i).context("Missing content value")?.to_string(),
+            content: contents
+                .get(i)
+                .context("Missing content value")?
+                .to_string(),
             activation: activations.get(i).context("Missing activation value")?,
             tags: tags_str,
         });
@@ -193,10 +224,12 @@ fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &s
     let tag_series = found_tags.unique()?;
     let tag_list_series = tag_series.implode()?.into_series();
 
-    let suggestions = df_syn.lazy()
+    let suggestions = df_syn
+        .lazy()
         .filter(
-            col("tag_a").is_in(lit(tag_list_series.clone()), false)
-            .or(col("tag_b").is_in(lit(tag_list_series), false))
+            col("tag_a")
+                .is_in(lit(tag_list_series.clone()), false)
+                .or(col("tag_b").is_in(lit(tag_list_series), false)),
         )
         .collect()?;
 
@@ -214,11 +247,15 @@ fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &s
 
             if a != pattern_stemmed {
                 let entry = concept_map.entry(a.to_string()).or_insert(w);
-                if w > *entry { *entry = w; }
+                if w > *entry {
+                    *entry = w;
+                }
             }
             if b != pattern_stemmed {
                 let entry = concept_map.entry(b.to_string()).or_insert(w);
-                if w > *entry { *entry = w; }
+                if w > *entry {
+                    *entry = w;
+                }
             }
         }
 

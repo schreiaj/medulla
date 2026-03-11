@@ -1,6 +1,6 @@
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::Path;
-use anyhow::Result;
 
 // Import the logic from our library
 use med::commands;
@@ -38,13 +38,13 @@ enum Commands {
 
     /// Query the hybrid memory (Global Brain + Local Musings)
     Query {
-            /// The text pattern to search for
-            text: String,
+        /// The text pattern to search for
+        text: String,
 
-            /// Number of results to return
-            #[arg(short, long, default_value_t = 5)]
-            limit: usize,
-        },
+        /// Number of results to return
+        #[arg(short, long, default_value_t = 5)]
+        limit: usize,
+    },
 
     /// Consolidate local musings into the global brain.ndjson
     Consolidate,
@@ -78,8 +78,8 @@ fn main() -> Result<()> {
         }
 
         Commands::Query { text, limit } => {
-                med::commands::query::run(&text, limit)?;
-            }
+            med::commands::query::run(&text, limit)?;
+        }
 
         // Commands::Consolidate => {
         //     commands::consolidate::run()?;
