@@ -246,7 +246,11 @@ fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &s
         sorted_concepts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         if !sorted_concepts.is_empty() {
-            let concepts: Vec<String> = sorted_concepts.into_iter().take(5).map(|(tag, _)| tag).collect();
+            let concepts: Vec<String> = sorted_concepts
+                .into_iter()
+                .take(5)
+                .map(|(tag, _)| tag)
+                .collect();
             println!("\nRelated: {}", concepts.join(", "));
         }
     }
