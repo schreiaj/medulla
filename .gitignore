@@ -1,4 +1,5 @@
 /target
+/example
 
 # Medulla: Local working memory and caches
 .medulla/musings.ndjson

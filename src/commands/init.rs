@@ -39,13 +39,7 @@ pub fn run_in(root: &Path) -> Result<()> {
 
     // 3. Initialize AGENTS.md
     let agents_md_path = root.join("AGENTS.md");
-    let protocol = r#"
-## Medulla Memory Protocol
-This repository uses Medulla (`med`) for cognitive memory.
-- **Querying**: Use `med query "topic"` to retrieve context before starting tasks.
-- **Learning**: Use `med learn "observation"` to record new findings.
-- **Syncing**: Run `med consolidate` before pushing your branch.
-"#;
+    let protocol = include_str!("../templates/AGENTS.md");
 
     let current_agents_md = match fs::read_to_string(&agents_md_path) {
         Ok(s) => s,
@@ -58,7 +52,7 @@ This repository uses Medulla (`med`) for cognitive memory.
         .create(true)
         .open(&agents_md_path)?;
 
-    if !current_agents_md.contains("Medulla Memory Protocol") {
+    if !current_agents_md.contains("Cognitive Memory Drive (Medulla)") {
         writeln!(agents_file, "{}", protocol)?;
     }
 
