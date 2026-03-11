@@ -31,23 +31,27 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
     let brain_path = root.join(".medulla/brain.parquet");
     let synapses_path = root.join(".medulla/synapses.parquet");
 
-    if !musings_path.exists() {
+    let public_ndjson = root.join("brain.ndjson");
+
+    if !musings_path.exists() && !public_ndjson.exists() {
         println!("The mind is blank. Run 'med learn' to add memories.");
         return Ok(());
     }
 
-    // 1. Auto-Consolidation Check
-    let needs_update = if !brain_path.exists() {
-        true
-    } else {
-        let m_meta = fs::metadata(&musings_path)?;
-        let b_meta = fs::metadata(&brain_path)?;
-        let m_time = m_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let b_time = b_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        m_time > b_time
+    // 1. Auto-Consolidation Check — trigger if brain.parquet is missing or stale
+    // relative to either the local musings or the Git-tracked brain.ndjson.
+    let get_mtime = |p: &Path| -> SystemTime {
+        fs::metadata(p)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH)
     };
 
+    let needs_update = !brain_path.exists()
+        || get_mtime(&musings_path) > get_mtime(&brain_path)
+        || get_mtime(&public_ndjson) > get_mtime(&brain_path);
+
     if needs_update {
+        println!("[MED] Data drift detected. Recompiling cognitive graph...");
         crate::commands::think::run_in(root)?;
     }
 

@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use med::commands::{init, learn, think};
+use med::commands::{commit, init, learn, query, think};
 use polars::prelude::*;
 use std::fs;
 use std::io::Write;
@@ -299,6 +299,184 @@ fn test_recency_bias_and_reconstruction() {
     assert!(
         w_soft > w_heavy,
         "Recency bias failed: New (n=2) should outrank Old (n=5)"
+    );
+}
+
+#[test]
+fn test_commit_deduplicates_and_strips_metadata() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    // Learn two distinct entries plus a duplicate (same id) to test dedup
+    let id = Some("fixed-commit-id".to_string());
+    learn::run_in(root, "Version 1", vec!["alpha".into()], id.clone()).unwrap();
+    learn::run_in(root, "Version 2", vec!["beta".into()], id.clone()).unwrap();
+    learn::run_in(root, "Another fact", vec!["gamma".into()], None).unwrap();
+
+    commit::run_in(root).unwrap();
+
+    let brain_path = root.join("brain.ndjson");
+    assert!(brain_path.exists());
+
+    let content = fs::read_to_string(&brain_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Dedup: 2 unique ids (fixed-commit-id + auto-generated)
+    assert_eq!(
+        lines.len(),
+        2,
+        "Expected 2 deduplicated entries, got {}",
+        lines.len()
+    );
+
+    for line in &lines {
+        let obj: serde_json::Value = serde_json::from_str(line).unwrap();
+        // Required keys present
+        assert!(obj.get("id").is_some());
+        assert!(obj.get("content").is_some());
+        assert!(obj.get("tags").is_some());
+        // Metadata keys absent
+        assert!(obj.get("timestamp").is_none());
+        assert!(obj.get("access_count").is_none());
+        assert!(obj.get("last_access").is_none());
+    }
+
+    // Dedup kept last-write-wins
+    let fixed = lines
+        .iter()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|obj| obj["id"] == "fixed-commit-id")
+        .expect("fixed-commit-id not found");
+    assert_eq!(fixed["content"], "Version 2");
+
+    // Sorted alphabetically by id
+    let ids: Vec<&str> = lines
+        .iter()
+        .map(|l| {
+            let obj: serde_json::Value = serde_json::from_str(l).unwrap();
+            // Extract id as owned value; we compare them as strings
+            obj["id"].as_str().unwrap().to_string()
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|s| Box::leak(s.into_boxed_str()) as &str)
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "brain.ndjson entries are not sorted by id");
+}
+
+#[test]
+fn test_commit_idempotent() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+    learn::run_in(root, "Stable fact", vec!["tag".into()], None).unwrap();
+
+    commit::run_in(root).unwrap();
+    let first = fs::read_to_string(root.join("brain.ndjson")).unwrap();
+
+    commit::run_in(root).unwrap();
+    let second = fs::read_to_string(root.join("brain.ndjson")).unwrap();
+
+    assert_eq!(
+        first, second,
+        "Repeated commits must produce identical output"
+    );
+}
+
+/// Verify that query detects a brain.ndjson that is newer than brain.parquet and
+/// triggers a recompile via think, pulling the new entry into the searchable cache.
+#[test]
+fn test_query_triggers_recompile_on_brain_ndjson_drift() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    // 1. Learn a local fact and build the initial brain.parquet
+    learn::run_in(root, "local baseline", vec!["local".into()], None).unwrap();
+    think::run_in(root).unwrap();
+
+    // 2. Pause so the next file write has a strictly later mtime
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // 3. Write brain.ndjson with a new entry (simulating a teammate's git push)
+    let git_entry = serde_json::json!({
+        "id": "git-pulled-id",
+        "content": "fact arrived via git pull",
+        "tags": ["remote"]
+    });
+    fs::write(root.join("brain.ndjson"), format!("{}\n", git_entry)).unwrap();
+
+    // 4. Query — staleness check should detect the newer brain.ndjson and recompile
+    query::run_in(root, "git pull", 5).unwrap();
+
+    // 5. brain.parquet must now contain the git-pulled entry
+    let mut file = fs::File::open(root.join(".medulla/brain.parquet")).unwrap();
+    let df = ParquetReader::new(&mut file).finish().unwrap();
+    let contents: Vec<&str> = df
+        .column("content")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert!(
+        contents.contains(&"fact arrived via git pull"),
+        "brain.parquet should contain the git-pulled entry after recompile, got: {:?}",
+        contents
+    );
+}
+
+/// Verify that `med learn` followed by `med think` correctly merges local musings
+/// with an existing brain.ndjson — both the newly learned entry and the previously
+/// committed entry must appear in the resulting brain.parquet.
+#[test]
+fn test_learn_merges_with_existing_brain_ndjson() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    // 1. Simulate an existing brain.ndjson (e.g. from a previous `med commit`)
+    let committed_entry = serde_json::json!({
+        "id": "committed-id",
+        "content": "previously committed fact",
+        "tags": ["committed"]
+    });
+    fs::write(root.join("brain.ndjson"), format!("{}\n", committed_entry)).unwrap();
+
+    // 2. Learn a brand-new local fact (not yet in brain.ndjson)
+    learn::run_in(root, "newly learned fact", vec!["fresh".into()], None).unwrap();
+
+    // 3. think should overlay brain.ndjson on top of musings and compile both
+    think::run_in(root).unwrap();
+
+    // 4. brain.parquet must contain both entries
+    let mut file = fs::File::open(root.join(".medulla/brain.parquet")).unwrap();
+    let df = ParquetReader::new(&mut file).finish().unwrap();
+    assert_eq!(
+        df.height(),
+        2,
+        "Expected 2 entries in brain.parquet, got {}",
+        df.height()
+    );
+    let contents: Vec<&str> = df
+        .column("content")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert!(
+        contents.contains(&"previously committed fact"),
+        "Missing committed entry, got: {:?}",
+        contents
+    );
+    assert!(
+        contents.contains(&"newly learned fact"),
+        "Missing newly learned entry, got: {:?}",
+        contents
     );
 }
 

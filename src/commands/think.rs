@@ -1,9 +1,14 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use polars::prelude::*;
+use serde_json::Value;
+use std::collections::HashMap;
 use std::f64::consts::E;
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Cursor};
 use std::path::Path;
+
+use crate::core::MemoryEntry;
 
 const DECAY_RATE: f64 = 0.5;
 const LEARNING_RATE: f64 = 0.1;
@@ -26,22 +31,106 @@ pub fn run_in(root: &Path) -> Result<()> {
         None
     };
 
-    consolidate_entries(root, now_ms)?;
-    update_synapses(root, now_ms)?;
+    let canonical = build_canonical_entries(root, now_ms)?;
+    consolidate_entries(root, now_ms, &canonical)?;
+    update_synapses(root, now_ms, &canonical)?;
     Ok(())
 }
 
-fn consolidate_entries(root: &Path, now_ms: i64) -> Result<()> {
-    let musings_path = root.join(".medulla/musings.ndjson");
+/// Merge local musings (ACT-R metadata) with the Git-tracked brain.ndjson (authoritative text).
+///
+/// Local musings are read first as the stateful baseline. brain.ndjson is then overlaid:
+/// for entries that exist locally, only content and tags are updated (preserving access_count
+/// and timestamps). Entries present only in brain.ndjson — e.g. learned by a teammate and
+/// merged via `git pull` — are rehydrated with default metadata so the graph can process them.
+fn build_canonical_entries(root: &Path, now_ms: i64) -> Result<Vec<MemoryEntry>> {
+    let local_ndjson = root.join(".medulla/musings.ndjson");
+    let public_ndjson = root.join("brain.ndjson");
+    let mut map: HashMap<String, MemoryEntry> = HashMap::new();
+
+    // 1. Read local musings (stateful baseline)
+    if local_ndjson.exists() {
+        let file = File::open(&local_ndjson)?;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<MemoryEntry>(&line) {
+                let e = map.entry(entry.id.clone()).or_insert_with(|| entry.clone());
+                if entry.timestamp >= e.timestamp {
+                    *e = entry;
+                }
+            }
+        }
+    }
+
+    // 2. Overlay brain.ndjson (Git-tracked, authoritative for text and tags)
+    if public_ndjson.exists() {
+        let file = File::open(&public_ndjson)?;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(stateless) = serde_json::from_str::<Value>(&line) {
+                let id = stateless["id"].as_str().unwrap_or("").to_string();
+                let content = stateless["content"].as_str().unwrap_or("").to_string();
+                let tags: Vec<String> = stateless["tags"]
+                    .as_array()
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+
+                if id.is_empty() {
+                    continue;
+                }
+
+                if let Some(existing) = map.get_mut(&id) {
+                    // Git is the source of truth for facts — update text and tags
+                    // while preserving the agent's local access_count and timestamps.
+                    existing.content = content;
+                    existing.associations = tags;
+                } else {
+                    // New entry from a teammate via git pull — rehydrate with default metadata.
+                    map.insert(
+                        id.clone(),
+                        MemoryEntry {
+                            id,
+                            content,
+                            associations: tags,
+                            timestamp: now_ms,
+                            access_count: 1,
+                            last_access: now_ms,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(map.into_values().collect())
+}
+
+/// Serialize canonical entries to an in-memory NDJSON buffer for Polars.
+fn entries_to_df(canonical: &[MemoryEntry]) -> Result<DataFrame> {
+    let ndjson = canonical
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    Ok(JsonReader::new(Cursor::new(ndjson.into_bytes()))
+        .with_json_format(JsonFormat::JsonLines)
+        .finish()?)
+}
+
+fn consolidate_entries(root: &Path, now_ms: i64, canonical: &[MemoryEntry]) -> Result<()> {
     let brain_path = root.join(".medulla/brain.parquet");
-    if !musings_path.exists() {
+    if canonical.is_empty() {
         return Ok(());
     }
 
-    let path_str = musings_path.to_string_lossy();
-    let lf = LazyJsonLineReader::new(path_str.as_ref().into()).finish()?;
-
-    let processed_lf = lf
+    let processed_lf = entries_to_df(canonical)?
+        .lazy()
         .with_column(
             (((lit(now_ms) - col("timestamp")).cast(DataType::Float64) / lit(1000.0) + lit(1.0))
                 .pow(lit(-DECAY_RATE))
@@ -69,17 +158,11 @@ fn consolidate_entries(root: &Path, now_ms: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
-    let musings_path = root.join(".medulla/musings.ndjson");
+pub fn update_synapses(root: &Path, now_ms: i64, canonical: &[MemoryEntry]) -> Result<()> {
     let synapses_path = root.join(".medulla/synapses.parquet");
-    if !musings_path.exists() {
+    if canonical.is_empty() {
         return Ok(());
     }
-
-    let path_str = musings_path.to_string_lossy();
-    let lf_musings = LazyJsonLineReader::new(path_str.as_ref().into())
-        .finish()
-        .context("Failed to read musings for Hebbian reconstruction")?;
 
     let explode_sel = Selector::ByName {
         names: vec!["associations".into()].into(),
@@ -90,8 +173,9 @@ pub fn update_synapses(root: &Path, now_ms: i64) -> Result<()> {
         keep_nulls: false,
     };
 
-    // Materialize once to avoid reading musings.ndjson twice for the self-join
-    let base_df = lf_musings
+    // Materialize once to avoid redundant work during the self-join
+    let base_df = entries_to_df(canonical)?
+        .lazy()
         .filter(col("associations").list().len().gt(lit(1)))
         .explode(explode_sel, explode_opts)
         .collect()?;
