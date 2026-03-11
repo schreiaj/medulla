@@ -37,12 +37,31 @@ med learn "The robot arm uses silicone grippers for better grip" --tags robotics
 # Record with a stable ID (for updating a fact later)
 med learn "Silicone degrades under UV exposure" --tags materials,durability --id silicone-uv
 
-# Consolidate into ranked cache, this will also happen automatically if new facts have been learned since last cache
+# Consolidate into ranked cache (also happens automatically when cache is stale)
 med think
 
 # Query (auto-consolidates if cache is stale)
 med query "silicone"
 med query "robotics" --limit 10
+
+# Export a clean, git-trackable snapshot of the brain
+med commit
+git add brain.ndjson && git commit -m "chore: update brain snapshot"
+```
+
+## GitOps workflow
+
+`med commit` exports a deterministic `brain.ndjson` to your project root. It strips
+ephemeral metadata (access counts, timestamps) and sorts entries by ID, so `git diff`
+shows only genuine knowledge changes — not cognitive noise.
+
+When a teammate merges their own `brain.ndjson`, `med query` detects the drift and
+automatically recompiles, overlaying their facts onto your local ACT-R state. You get
+their knowledge without losing your access history.
+
+```
+agent A learns → med commit → git push
+agent B git pull → med query (auto-recompile) → unified brain
 ```
 
 ## Agent integration
@@ -53,18 +72,20 @@ Key protocol rules for agents:
 - Query with **single keywords** for best results
 - Use the **Related Concepts** table to chain a second query
 - Record new findings with `med learn` during a session
-- Run `med think` to consolidate before ending a session
+- Run `med think` then `med commit` at the end of a session to persist and share knowledge
 
 See [`src/templates/AGENTS.md`](src/templates/AGENTS.md) for the full agent protocol.
 
 ## Data files
 
-All data lives in `.medulla/` in your project directory. `med init` adds the runtime files to `.gitignore` automatically — only `AGENTS.md` is tracked.
+`med init` adds runtime files to `.gitignore` automatically. `brain.ndjson` is the only
+data file intended for git — it is the stable, shareable export of the brain.
 
 | File | Purpose | Tracked? |
 |------|---------|---------|
 | `.medulla/AGENTS.md` | Agent protocol instructions | Yes |
-| `.medulla/musings.ndjson` | Raw fact log (source of truth) | No |
+| `brain.ndjson` | Shareable brain snapshot (git-stable) | Yes |
+| `.medulla/musings.ndjson` | Raw fact log with ACT-R metadata | No |
 | `.medulla/brain.parquet` | Ranked fact cache | No |
 | `.medulla/synapses.parquet` | Tag association graph | No |
 

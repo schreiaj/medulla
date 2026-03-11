@@ -33,6 +33,19 @@ med learn "Your observation here" --tags keyword1,keyword2
 
 ```bash
 med think
+med commit
 ```
 
-Run this when your session ends to consolidate memory into the ranked cache.
+Run both when your session ends. `med think` consolidates memory into the ranked cache.
+`med commit` exports a clean, git-stable snapshot to `brain.ndjson` — stripped of
+ephemeral metadata so `git diff` reflects only genuine knowledge changes.
+
+Commit `brain.ndjson` to share your findings with other agents on the team:
+
+```bash
+git add brain.ndjson
+git commit -m "chore: update brain snapshot"
+```
+
+Knowledge merged from teammates via `git pull` is automatically incorporated the next
+time you run `med query` or `med think`.
