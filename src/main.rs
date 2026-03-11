@@ -46,8 +46,8 @@ enum Commands {
         limit: usize,
     },
 
-    /// Consolidate local musings into the global brain.ndjson
-    Consolidate,
+    /// Export a clean, git-friendly brain.ndjson snapshot
+    Commit,
 }
 
 fn main() -> Result<()> {
@@ -81,11 +81,8 @@ fn main() -> Result<()> {
             med::commands::query::run(&text, limit)?;
         }
 
-        // Commands::Consolidate => {
-        //     commands::consolidate::run()?;
-        // }
-        _ => {
-            todo!("Unimplemented")
+        Commands::Commit => {
+            commands::commit::run()?;
         }
     }
 

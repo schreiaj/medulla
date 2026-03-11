@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use med::commands::{init, learn, think};
+use med::commands::{commit, init, learn, think};
 use polars::prelude::*;
 use std::fs;
 use std::io::Write;
@@ -299,6 +299,90 @@ fn test_recency_bias_and_reconstruction() {
     assert!(
         w_soft > w_heavy,
         "Recency bias failed: New (n=2) should outrank Old (n=5)"
+    );
+}
+
+#[test]
+fn test_commit_deduplicates_and_strips_metadata() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    // Learn two distinct entries plus a duplicate (same id) to test dedup
+    let id = Some("fixed-commit-id".to_string());
+    learn::run_in(root, "Version 1", vec!["alpha".into()], id.clone()).unwrap();
+    learn::run_in(root, "Version 2", vec!["beta".into()], id.clone()).unwrap();
+    learn::run_in(root, "Another fact", vec!["gamma".into()], None).unwrap();
+
+    commit::run_in(root).unwrap();
+
+    let brain_path = root.join("brain.ndjson");
+    assert!(brain_path.exists());
+
+    let content = fs::read_to_string(&brain_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Dedup: 2 unique ids (fixed-commit-id + auto-generated)
+    assert_eq!(
+        lines.len(),
+        2,
+        "Expected 2 deduplicated entries, got {}",
+        lines.len()
+    );
+
+    for line in &lines {
+        let obj: serde_json::Value = serde_json::from_str(line).unwrap();
+        // Required keys present
+        assert!(obj.get("id").is_some());
+        assert!(obj.get("content").is_some());
+        assert!(obj.get("tags").is_some());
+        // Metadata keys absent
+        assert!(obj.get("timestamp").is_none());
+        assert!(obj.get("access_count").is_none());
+        assert!(obj.get("last_access").is_none());
+    }
+
+    // Dedup kept last-write-wins
+    let fixed = lines
+        .iter()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|obj| obj["id"] == "fixed-commit-id")
+        .expect("fixed-commit-id not found");
+    assert_eq!(fixed["content"], "Version 2");
+
+    // Sorted alphabetically by id
+    let ids: Vec<&str> = lines
+        .iter()
+        .map(|l| {
+            let obj: serde_json::Value = serde_json::from_str(l).unwrap();
+            // Extract id as owned value; we compare them as strings
+            obj["id"].as_str().unwrap().to_string()
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|s| Box::leak(s.into_boxed_str()) as &str)
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "brain.ndjson entries are not sorted by id");
+}
+
+#[test]
+fn test_commit_idempotent() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+    learn::run_in(root, "Stable fact", vec!["tag".into()], None).unwrap();
+
+    commit::run_in(root).unwrap();
+    let first = fs::read_to_string(root.join("brain.ndjson")).unwrap();
+
+    commit::run_in(root).unwrap();
+    let second = fs::read_to_string(root.join("brain.ndjson")).unwrap();
+
+    assert_eq!(
+        first, second,
+        "Repeated commits must produce identical output"
     );
 }
 
