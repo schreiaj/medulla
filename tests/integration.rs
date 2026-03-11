@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use med::commands::{commit, init, learn, think};
+use med::commands::{commit, init, learn, query, think};
 use polars::prelude::*;
 use std::fs;
 use std::io::Write;
@@ -383,6 +383,100 @@ fn test_commit_idempotent() {
     assert_eq!(
         first, second,
         "Repeated commits must produce identical output"
+    );
+}
+
+/// Verify that query detects a brain.ndjson that is newer than brain.parquet and
+/// triggers a recompile via think, pulling the new entry into the searchable cache.
+#[test]
+fn test_query_triggers_recompile_on_brain_ndjson_drift() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    // 1. Learn a local fact and build the initial brain.parquet
+    learn::run_in(root, "local baseline", vec!["local".into()], None).unwrap();
+    think::run_in(root).unwrap();
+
+    // 2. Pause so the next file write has a strictly later mtime
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // 3. Write brain.ndjson with a new entry (simulating a teammate's git push)
+    let git_entry = serde_json::json!({
+        "id": "git-pulled-id",
+        "content": "fact arrived via git pull",
+        "tags": ["remote"]
+    });
+    fs::write(root.join("brain.ndjson"), format!("{}\n", git_entry)).unwrap();
+
+    // 4. Query — staleness check should detect the newer brain.ndjson and recompile
+    query::run_in(root, "git pull", 5).unwrap();
+
+    // 5. brain.parquet must now contain the git-pulled entry
+    let mut file = fs::File::open(root.join(".medulla/brain.parquet")).unwrap();
+    let df = ParquetReader::new(&mut file).finish().unwrap();
+    let contents: Vec<&str> = df
+        .column("content")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert!(
+        contents.contains(&"fact arrived via git pull"),
+        "brain.parquet should contain the git-pulled entry after recompile, got: {:?}",
+        contents
+    );
+}
+
+/// Verify that `med learn` followed by `med think` correctly merges local musings
+/// with an existing brain.ndjson — both the newly learned entry and the previously
+/// committed entry must appear in the resulting brain.parquet.
+#[test]
+fn test_learn_merges_with_existing_brain_ndjson() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    // 1. Simulate an existing brain.ndjson (e.g. from a previous `med commit`)
+    let committed_entry = serde_json::json!({
+        "id": "committed-id",
+        "content": "previously committed fact",
+        "tags": ["committed"]
+    });
+    fs::write(root.join("brain.ndjson"), format!("{}\n", committed_entry)).unwrap();
+
+    // 2. Learn a brand-new local fact (not yet in brain.ndjson)
+    learn::run_in(root, "newly learned fact", vec!["fresh".into()], None).unwrap();
+
+    // 3. think should overlay brain.ndjson on top of musings and compile both
+    think::run_in(root).unwrap();
+
+    // 4. brain.parquet must contain both entries
+    let mut file = fs::File::open(root.join(".medulla/brain.parquet")).unwrap();
+    let df = ParquetReader::new(&mut file).finish().unwrap();
+    assert_eq!(
+        df.height(),
+        2,
+        "Expected 2 entries in brain.parquet, got {}",
+        df.height()
+    );
+    let contents: Vec<&str> = df
+        .column("content")
+        .unwrap()
+        .str()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert!(
+        contents.contains(&"previously committed fact"),
+        "Missing committed entry, got: {:?}",
+        contents
+    );
+    assert!(
+        contents.contains(&"newly learned fact"),
+        "Missing newly learned entry, got: {:?}",
+        contents
     );
 }
 
