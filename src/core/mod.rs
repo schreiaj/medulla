@@ -40,6 +40,7 @@ pub fn lock_musings(musings_path: &Path, exclusive: bool) -> Result<fs::File> {
     let lock_file = fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("Failed to open lock file: {}", lock_path.display()))?;
     if exclusive {

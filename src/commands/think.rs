@@ -10,7 +10,7 @@ const LEARNING_RATE: f64 = 0.1;
 
 pub fn run() -> Result<()> {
     run_in(Path::new("."))?;
-    println!("✔ Brain consolidated. Recency bias and Hebbian synapses updated.");
+    println!("✔ Memory consolidated.");
     Ok(())
 }
 

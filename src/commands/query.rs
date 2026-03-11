@@ -16,22 +16,10 @@ static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
 #[derive(Tabled)]
 struct MemoryRow {
-    #[tabled(rename = "ID")]
-    id: String,
-    #[tabled(rename = "Memory Content")]
+    #[tabled(rename = "Memory")]
     content: String,
-    #[tabled(rename = "Activation")]
-    activation: f64,
     #[tabled(rename = "Tags")]
     tags: String,
-}
-
-#[derive(Tabled)]
-struct SuggestionRow {
-    #[tabled(rename = "Related Concept")]
-    tag: String,
-    #[tabled(rename = "Strength")]
-    strength: f64,
 }
 
 pub fn run(pattern: &str, limit: usize) -> Result<()> {
@@ -60,7 +48,6 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
     };
 
     if needs_update {
-        println!("[MED] Processing new experiences before querying...");
         crate::commands::think::run_in(root)?;
     }
 
@@ -186,9 +173,7 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
 }
 
 fn render_memories(df: &DataFrame) -> Result<()> {
-    let ids = df.column("id")?.str()?;
     let contents = df.column("content")?.str()?;
-    let activations = df.column("activation")?.f64()?;
     let associations = df.column("associations")?.list()?;
 
     let mut rows = Vec::new();
@@ -203,17 +188,15 @@ fn render_memories(df: &DataFrame) -> Result<()> {
             .join(", ");
 
         rows.push(MemoryRow {
-            id: ids.get(i).context("Missing id value")?.to_string(),
             content: contents
                 .get(i)
                 .context("Missing content value")?
                 .to_string(),
-            activation: activations.get(i).context("Missing activation value")?,
             tags: tags_str,
         });
     }
 
-    println!("\n--- Top Memories (Ranked by ACT-R Activation) ---");
+    println!("\nMemories:");
     let mut table = Table::new(rows);
     table.with(Style::rounded());
     println!("{}", table);
@@ -241,9 +224,9 @@ fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &s
         let mut concept_map: HashMap<String, f64> = HashMap::new();
 
         for i in 0..suggestions.height() {
-            let a = tag_a.get(i).unwrap();
-            let b = tag_b.get(i).unwrap();
-            let w = weights.get(i).unwrap();
+            let a = tag_a.get(i).unwrap_or_default();
+            let b = tag_b.get(i).unwrap_or_default();
+            let w = weights.get(i).unwrap_or(0.0);
 
             if a != pattern_stemmed {
                 let entry = concept_map.entry(a.to_string()).or_insert(w);
@@ -263,14 +246,8 @@ fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &s
         sorted_concepts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         if !sorted_concepts.is_empty() {
-            println!("\n--- Related Concepts (Hebbian Associations) ---");
-            let mut rows = Vec::new();
-            for (tag, strength) in sorted_concepts.into_iter().take(5) {
-                rows.push(SuggestionRow { tag, strength });
-            }
-            let mut table = Table::new(rows);
-            table.with(Style::rounded());
-            println!("{}", table);
+            let concepts: Vec<String> = sorted_concepts.into_iter().take(5).map(|(tag, _)| tag).collect();
+            println!("\nRelated: {}", concepts.join(", "));
         }
     }
 
