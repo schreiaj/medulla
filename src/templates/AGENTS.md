@@ -4,19 +4,22 @@ You are equipped with a persistent memory system via the `med` CLI.
 
 CRITICAL RULES:
 1. ALWAYS use the `bash` tool to access memory — never use built-in search or retrieval tools.
-2. ALWAYS use SINGLE KEYWORDS for queries. NEVER search for phrases.
-3. Query BEFORE starting any task to load relevant context.
+2. Query BEFORE starting any task to load relevant context.
 
 ## Querying Memory
 
 ```bash
-med query "<single_keyword>"
+med query "<keyword or natural language phrase>"
 ```
 
+Queries support both single keywords and natural language phrases. Semantic search will
+find related memories even when the exact words don't match (e.g. "camouflage technique"
+can surface memories tagged with "disguise" or "concealment").
+
 ### The Retrieval Loop (MANDATORY)
-1. Run a query with a single keyword.
+1. Run a query describing what you need.
 2. Read the "Top Memories" results.
-3. Check the "Related Concepts" table. If your keyword didn't fully answer the question, pick the most relevant concept and run a SECOND query with that concept.
+3. Check the "Related Concepts" table. If results are incomplete, pick the most relevant concept and run a SECOND query with that concept.
 4. Synthesize the results before proceeding.
 
 ## Recording New Knowledge

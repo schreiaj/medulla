@@ -31,6 +31,10 @@ enum Commands {
         /// Optional: specific ID (if updating an existing fact)
         #[arg(short, long)]
         id: Option<String>,
+
+        /// Optional: citation source for the fact (URL, document name, etc.)
+        #[arg(short, long)]
+        source: Option<String>,
     },
 
     /// Compile logs into the high-performance Parquet cache using ACT-R logic
@@ -44,6 +48,10 @@ enum Commands {
         /// Number of results to return
         #[arg(short, long, default_value_t = 5)]
         limit: usize,
+
+        /// Minimum cosine similarity threshold for semantic search (0.0–1.0)
+        #[arg(long, default_value_t = 0.70)]
+        threshold: f32,
     },
 
     /// Export a clean, git-friendly brain.ndjson snapshot
@@ -69,16 +77,25 @@ fn main() -> Result<()> {
             commands::init::run()?;
         }
 
-        Commands::Learn { content, tags, id } => {
-            commands::learn::run(&content, tags, id)?;
+        Commands::Learn {
+            content,
+            tags,
+            id,
+            source,
+        } => {
+            commands::learn::run(&content, tags, id, source)?;
         }
 
         Commands::Think => {
             commands::think::run()?;
         }
 
-        Commands::Query { text, limit } => {
-            med::commands::query::run(&text, limit)?;
+        Commands::Query {
+            text,
+            limit,
+            threshold,
+        } => {
+            med::commands::query::run(&text, limit, threshold)?;
         }
 
         Commands::Commit => {

@@ -9,7 +9,14 @@ pub struct MemoryEntry {
     pub id: String,
     pub content: String,
     pub timestamp: i64,
+    /// Original lowercase tags — used for display.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Stemmed forms of tags — used as Hebbian graph keys.
     pub associations: Vec<String>,
+    /// Optional citation string for agents to reference the origin of a fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default)]
     pub access_count: u32,
     #[serde(default)]
