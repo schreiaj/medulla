@@ -88,7 +88,12 @@ pub fn run_in(
     Ok(())
 }
 
-pub fn run(content: &str, tags: Vec<String>, id: Option<String>, source: Option<String>) -> Result<()> {
+pub fn run(
+    content: &str,
+    tags: Vec<String>,
+    id: Option<String>,
+    source: Option<String>,
+) -> Result<()> {
     run_in(Path::new("."), content, tags, id, source)?;
     println!("✔ Memory encoded.");
     Ok(())

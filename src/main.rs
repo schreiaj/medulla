@@ -77,7 +77,12 @@ fn main() -> Result<()> {
             commands::init::run()?;
         }
 
-        Commands::Learn { content, tags, id, source } => {
+        Commands::Learn {
+            content,
+            tags,
+            id,
+            source,
+        } => {
             commands::learn::run(&content, tags, id, source)?;
         }
 
@@ -85,7 +90,11 @@ fn main() -> Result<()> {
             commands::think::run()?;
         }
 
-        Commands::Query { text, limit, threshold } => {
+        Commands::Query {
+            text,
+            limit,
+            threshold,
+        } => {
             med::commands::query::run(&text, limit, threshold)?;
         }
 

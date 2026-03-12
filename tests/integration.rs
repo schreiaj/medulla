@@ -486,7 +486,11 @@ fn test_learn_merges_with_existing_brain_ndjson() {
 fn test_cosine_similarity_identical_vectors() {
     let v = vec![1.0f32, 2.0, 3.0];
     let sim = embed::cosine_similarity(&v, &v);
-    assert!((sim - 1.0).abs() < 1e-6, "identical vectors should have sim=1.0, got {}", sim);
+    assert!(
+        (sim - 1.0).abs() < 1e-6,
+        "identical vectors should have sim=1.0, got {}",
+        sim
+    );
 }
 
 #[test]
@@ -494,7 +498,11 @@ fn test_cosine_similarity_orthogonal_vectors() {
     let a = vec![1.0f32, 0.0, 0.0];
     let b = vec![0.0f32, 1.0, 0.0];
     let sim = embed::cosine_similarity(&a, &b);
-    assert!(sim.abs() < 1e-6, "orthogonal vectors should have sim=0.0, got {}", sim);
+    assert!(
+        sim.abs() < 1e-6,
+        "orthogonal vectors should have sim=0.0, got {}",
+        sim
+    );
 }
 
 #[test]
@@ -513,10 +521,9 @@ fn test_embeddings_parquet_roundtrip() {
     let ids = Series::new("id".into(), &["a", "b"]);
     let emb1 = Series::new("".into(), &[0.1f32, 0.2, 0.3]);
     let emb2 = Series::new("".into(), &[0.4f32, 0.5, 0.6]);
-    let embedding_series: Series =
-        ListChunked::from_iter(vec![emb1, emb2].into_iter())
-            .into_series()
-            .with_name("embedding".into());
+    let embedding_series: Series = ListChunked::from_iter(vec![emb1, emb2].into_iter())
+        .into_series()
+        .with_name("embedding".into());
 
     let n = 2usize;
     let id_col: Column = ids.into();
@@ -532,7 +539,13 @@ fn test_embeddings_parquet_roundtrip() {
 
     assert_eq!(df2.height(), 2);
     let list_col = df2.column("embedding").unwrap().list().unwrap();
-    let row0: Vec<f32> = list_col.get_as_series(0).unwrap().f32().unwrap().into_no_null_iter().collect();
+    let row0: Vec<f32> = list_col
+        .get_as_series(0)
+        .unwrap()
+        .f32()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
     assert!((row0[0] - 0.1f32).abs() < 1e-6);
 }
 
@@ -543,7 +556,10 @@ fn test_find_similar_returns_empty_without_embeddings_file() {
     init::run_in(root).unwrap();
 
     let result = embed::find_similar(root, "some query", 10, 0.70).unwrap();
-    assert!(result.is_empty(), "should return empty vec when no embeddings file exists");
+    assert!(
+        result.is_empty(),
+        "should return empty vec when no embeddings file exists"
+    );
 }
 
 #[test]
@@ -570,7 +586,10 @@ fn test_update_embeddings_is_incremental() {
         ParquetReader::new(&mut f).finish().unwrap().height()
     };
 
-    assert_eq!(row_count_1, row_count_2, "second think should not duplicate embeddings");
+    assert_eq!(
+        row_count_1, row_count_2,
+        "second think should not duplicate embeddings"
+    );
 }
 
 #[test]
@@ -591,7 +610,10 @@ fn test_semantic_query_finds_related_content() {
     think::run_in(root).unwrap();
 
     let ids = embed::find_similar(root, "octopus disguise", 10, 0.50).unwrap();
-    assert!(!ids.is_empty(), "semantic search should find the cephalopod entry");
+    assert!(
+        !ids.is_empty(),
+        "semantic search should find the cephalopod entry"
+    );
 }
 
 #[test]
@@ -611,7 +633,14 @@ fn test_query_reinforces_memory() {
 
     // 2. Learn a new fact
     let tags = vec!["robot".to_string()];
-    learn::run_in(root, "Testing the memory reinforcement loop.", tags, None, None).unwrap();
+    learn::run_in(
+        root,
+        "Testing the memory reinforcement loop.",
+        tags,
+        None,
+        None,
+    )
+    .unwrap();
 
     let musings_path = root.join(".medulla/musings.ndjson");
 

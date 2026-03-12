@@ -86,7 +86,9 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize, threshold: f32) -> Resul
     let combined_filter = if semantic_ids.is_empty() {
         base_filter
     } else {
-        let id_series = Series::new("semantic_ids".into(), semantic_ids).implode()?.into_series();
+        let id_series = Series::new("semantic_ids".into(), semantic_ids)
+            .implode()?
+            .into_series();
         base_filter.or(col("id").is_in(lit(id_series), false))
     };
 
@@ -211,9 +213,7 @@ fn render_memories(df: &DataFrame, header: &str) -> Result<()> {
 
     let mut rows = Vec::new();
     for i in 0..df.height() {
-        let tag_series = tag_col
-            .get_as_series(i)
-            .context("Missing tags series")?;
+        let tag_series = tag_col.get_as_series(i).context("Missing tags series")?;
         let tags_str = tag_series
             .str()?
             .into_no_null_iter()
@@ -277,17 +277,25 @@ fn render_suggestions(
         let w = weights.get(i).unwrap_or(0.0);
         if a != pattern_stemmed {
             let e = concept_map.entry(a.to_string()).or_insert(w);
-            if w > *e { *e = w; }
+            if w > *e {
+                *e = w;
+            }
         }
         if b != pattern_stemmed {
             let e = concept_map.entry(b.to_string()).or_insert(w);
-            if w > *e { *e = w; }
+            if w > *e {
+                *e = w;
+            }
         }
     }
 
     let mut sorted_concepts: Vec<_> = concept_map.into_iter().collect();
     sorted_concepts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let top_concepts: Vec<String> = sorted_concepts.into_iter().take(3).map(|(t, _)| t).collect();
+    let top_concepts: Vec<String> = sorted_concepts
+        .into_iter()
+        .take(3)
+        .map(|(t, _)| t)
+        .collect();
 
     if top_concepts.is_empty() {
         return Ok(());
@@ -301,8 +309,15 @@ fn render_suggestions(
         let candidates = df_brain
             .clone()
             .lazy()
-            .filter(col("associations").list().contains(lit(concept.as_str()), false))
-            .sort(["activation"], SortMultipleOptions::default().with_order_descending(true))
+            .filter(
+                col("associations")
+                    .list()
+                    .contains(lit(concept.as_str()), false),
+            )
+            .sort(
+                ["activation"],
+                SortMultipleOptions::default().with_order_descending(true),
+            )
             .limit(2)
             .collect()?;
 
@@ -336,7 +351,11 @@ fn render_suggestions(
                 .unwrap_or("—")
                 .to_string();
 
-            related_rows.push(MemoryRow { content, tags: tags_str, source });
+            related_rows.push(MemoryRow {
+                content,
+                tags: tags_str,
+                source,
+            });
         }
     }
 

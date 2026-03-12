@@ -1,10 +1,10 @@
+use crate::core::MemoryEntry;
+use anyhow::{Context, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use polars::prelude::*;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Mutex;
-use anyhow::{Context, Result};
-use crate::core::MemoryEntry;
 
 static EMBEDDER: Mutex<Option<TextEmbedding>> = Mutex::new(None);
 
@@ -85,7 +85,10 @@ pub fn update_embeddings(root: &Path, canonical: &[MemoryEntry]) -> Result<()> {
     let n = new_entries.len();
     let id_col: Column = Series::new(
         "id".into(),
-        new_entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+        new_entries
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect::<Vec<_>>(),
     )
     .into();
     let embedding_col: Column = ListChunked::from_iter(
@@ -137,10 +140,10 @@ pub fn find_similar(root: &Path, query: &str, k: usize, threshold: f32) -> Resul
         }
         // fastembed outputs L2-normalised vectors, so cosine similarity == dot product
         let sim: f32 = q.iter().zip(floats.iter()).map(|(x, y)| x * y).sum();
-        if sim >= threshold {
-            if let Some(id) = ids.get(i) {
-                scored.push((sim, id.to_string()));
-            }
+        if sim >= threshold
+            && let Some(id) = ids.get(i)
+        {
+            scored.push((sim, id.to_string()));
         }
     }
 
