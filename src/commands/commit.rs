@@ -50,7 +50,7 @@ pub fn run_in(root: &Path) -> Result<()> {
                 serde_json::to_string(&serde_json::json!({
                     "id": e.id,
                     "content": e.content,
-                    "tags": e.associations
+                    "tags": if e.tags.is_empty() { &e.associations } else { &e.tags }
                 }))?
             )?;
         }

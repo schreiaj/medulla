@@ -48,22 +48,26 @@ pub fn run_in(
 
     let en_stemmer = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
 
-    // Split, trim, lowercase, and STEM the tags
-    let parsed_tags: Vec<String> = tags
+    // Split, trim, and lowercase the tags — originals for display.
+    let original_tags: Vec<String> = tags
         .iter()
         .flat_map(|t| t.split(','))
-        .map(|t| {
-            let clean = t.trim().to_lowercase();
-            en_stemmer.stem(&clean).to_string()
-        })
+        .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty())
+        .collect();
+
+    // Stemmed forms for Hebbian graph indexing.
+    let stemmed_tags: Vec<String> = original_tags
+        .iter()
+        .map(|t| en_stemmer.stem(t).to_string())
         .collect();
 
     let entry = MemoryEntry {
         id,
         content: content.to_string(),
         timestamp: now_ms,
-        associations: parsed_tags,
+        tags: original_tags,
+        associations: stemmed_tags,
         access_count: 0,
         last_access: now_ms,
     };

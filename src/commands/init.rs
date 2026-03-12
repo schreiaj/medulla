@@ -18,6 +18,8 @@ pub fn run_in(root: &Path) -> Result<()> {
         "\n# Medulla: Local working memory and caches",
         ".medulla/musings.ndjson",
         ".medulla/brain.parquet",
+        ".medulla/embeddings.parquet",
+        ".medulla/.cache",
     ];
 
     let current_gitignore = match fs::read_to_string(&gitignore_path) {

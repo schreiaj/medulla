@@ -84,10 +84,11 @@ fn render_suggestions(path: std::path::PathBuf, tags: Vec<String>) -> Result<()>
     let df_syn = ParquetReader::new(&mut file).finish()?;
 
     // Find synapses where EITHER tag_a or tag_b matches our search tags
+    let tags_series = Series::new("tags".into(), &tags).implode()?.into_series();
     let suggestions = df_syn.lazy()
         .filter(
-            col("tag_a").is_in(lit(Series::new("tags".into(), &tags)))
-            .or(col("tag_b").is_in(lit(Series::new("tags".into(), &tags))))
+            col("tag_a").is_in(lit(tags_series.clone()))
+            .or(col("tag_b").is_in(lit(tags_series)))
         )
         .sort(["weight_log"], SortMultipleOptions::default().with_order_descending(true))
         .limit(5)

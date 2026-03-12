@@ -1,14 +1,18 @@
 use anyhow::Result;
 use chrono::Utc;
 use polars::prelude::*;
+use rust_stemmers::{Algorithm, Stemmer};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::f64::consts::E;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Cursor};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::core::MemoryEntry;
+
+static EN_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
 const DECAY_RATE: f64 = 0.5;
 const LEARNING_RATE: f64 = 0.1;
@@ -34,6 +38,7 @@ pub fn run_in(root: &Path) -> Result<()> {
     let canonical = build_canonical_entries(root, now_ms)?;
     consolidate_entries(root, now_ms, &canonical)?;
     update_synapses(root, now_ms, &canonical)?;
+    crate::commands::embed::update_embeddings(root, &canonical)?;
     Ok(())
 }
 
@@ -85,11 +90,15 @@ fn build_canonical_entries(root: &Path, now_ms: i64) -> Result<Vec<MemoryEntry>>
                     continue;
                 }
 
+                let stemmer = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
+                let stems: Vec<String> = tags.iter().map(|t| stemmer.stem(t).to_string()).collect();
+
                 if let Some(existing) = map.get_mut(&id) {
                     // Git is the source of truth for facts — update text and tags
                     // while preserving the agent's local access_count and timestamps.
                     existing.content = content;
-                    existing.associations = tags;
+                    existing.tags = tags;
+                    existing.associations = stems;
                 } else {
                     // New entry from a teammate via git pull — rehydrate with default metadata.
                     map.insert(
@@ -97,7 +106,8 @@ fn build_canonical_entries(root: &Path, now_ms: i64) -> Result<Vec<MemoryEntry>>
                         MemoryEntry {
                             id,
                             content,
-                            associations: tags,
+                            tags,
+                            associations: stems,
                             timestamp: now_ms,
                             access_count: 1,
                             last_access: now_ms,
@@ -118,9 +128,22 @@ fn entries_to_df(canonical: &[MemoryEntry]) -> Result<DataFrame> {
         .map(serde_json::to_string)
         .collect::<Result<Vec<_>, _>>()?
         .join("\n");
-    Ok(JsonReader::new(Cursor::new(ndjson.into_bytes()))
+    let df = JsonReader::new(Cursor::new(ndjson.into_bytes()))
         .with_json_format(JsonFormat::JsonLines)
-        .finish()?)
+        .finish()?;
+    // When all entries have empty `tags`, polars infers List(Null). Cast to List(String)
+    // so downstream code can always call .str()? on the inner series.
+    // For entries that predate dual-store (tags is empty), fall back to associations.
+    Ok(df
+        .lazy()
+        .with_column(col("tags").cast(DataType::List(Box::new(DataType::String))))
+        .with_column(
+            when(col("tags").list().len().eq(lit(0)))
+                .then(col("associations"))
+                .otherwise(col("tags"))
+                .alias("tags"),
+        )
+        .collect()?)
 }
 
 fn consolidate_entries(root: &Path, now_ms: i64, canonical: &[MemoryEntry]) -> Result<()> {

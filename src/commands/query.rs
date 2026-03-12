@@ -22,11 +22,11 @@ struct MemoryRow {
     tags: String,
 }
 
-pub fn run(pattern: &str, limit: usize) -> Result<()> {
-    run_in(Path::new("."), pattern, limit)
+pub fn run(pattern: &str, limit: usize, threshold: f32) -> Result<()> {
+    run_in(Path::new("."), pattern, limit, threshold)
 }
 
-pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
+pub fn run_in(root: &Path, pattern: &str, limit: usize, threshold: f32) -> Result<()> {
     let musings_path = root.join(".medulla/musings.ndjson");
     let brain_path = root.join(".medulla/brain.parquet");
     let synapses_path = root.join(".medulla/synapses.parquet");
@@ -46,7 +46,10 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
             .unwrap_or(SystemTime::UNIX_EPOCH)
     };
 
+    let embeddings_path = root.join(".medulla/embeddings.parquet");
+
     let needs_update = !brain_path.exists()
+        || !embeddings_path.exists()
         || get_mtime(&musings_path) > get_mtime(&brain_path)
         || get_mtime(&public_ndjson) > get_mtime(&brain_path);
 
@@ -65,18 +68,30 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
         .to_string();
 
     // 2. Search Logic — collect once, slice for display
+    // Semantic expansion — degrade gracefully if embeddings unavailable
+    let semantic_ids: Vec<String> =
+        crate::commands::embed::find_similar(root, pattern, 10, threshold).unwrap_or_default();
+
+    let base_filter = col("content")
+        .str()
+        .to_lowercase()
+        .str()
+        .contains(lit(pattern_stemmed.clone()), false)
+        .or(col("associations")
+            .list()
+            .contains(lit(pattern_stemmed.clone()), false));
+
+    let combined_filter = if semantic_ids.is_empty() {
+        base_filter
+    } else {
+        let id_series = Series::new("semantic_ids".into(), semantic_ids).implode()?.into_series();
+        base_filter.or(col("id").is_in(lit(id_series), false))
+    };
+
     let all_results = df_brain
+        .clone()
         .lazy()
-        .filter(
-            col("content")
-                .str()
-                .to_lowercase()
-                .str()
-                .contains(lit(pattern_stemmed.clone()), false)
-                .or(col("associations")
-                    .list()
-                    .contains(lit(pattern_stemmed.clone()), false)),
-        )
+        .filter(combined_filter)
         .sort(
             ["activation"],
             SortMultipleOptions::default().with_order_descending(true),
@@ -93,15 +108,22 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
 
     // Limit the results actually shown (and therefore "accessed")
     let display_results = all_results.head(Some(limit));
-    render_memories(&display_results)?;
+    render_memories(&display_results, "Memories")?;
 
     // 3. Reinforce the accessed memories in the source of truth
     reinforce_memories(root, &display_results)?;
 
-    // 4. Render Hebbian Suggestions
+    // 4. Walk the Hebbian graph from the displayed results and show related memories
     if synapses_path.exists() {
         let mut syn_file = File::open(&synapses_path)?;
         let df_syn = ParquetReader::new(&mut syn_file).finish()?;
+
+        let shown_ids: HashSet<String> = display_results
+            .column("id")?
+            .str()?
+            .into_no_null_iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let explode_opts = ExplodeOptions {
             empty_as_null: true,
@@ -110,7 +132,7 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize) -> Result<()> {
         let found_tags_col = all_results.column("associations")?.explode(explode_opts)?;
         let found_tags = found_tags_col.as_materialized_series().clone();
 
-        render_suggestions(df_syn, found_tags, &pattern_stemmed)?;
+        render_suggestions(df_syn, &df_brain, found_tags, &shown_ids, &pattern_stemmed)?;
     }
 
     Ok(())
@@ -176,16 +198,20 @@ fn reinforce_memories(root: &Path, displayed_df: &DataFrame) -> Result<()> {
     Ok(())
 }
 
-fn render_memories(df: &DataFrame) -> Result<()> {
+fn render_memories(df: &DataFrame, header: &str) -> Result<()> {
     let contents = df.column("content")?.str()?;
-    let associations = df.column("associations")?.list()?;
+    // Use original tags for display; fall back to associations for old entries
+    let tag_col = df
+        .column("tags")
+        .or_else(|_| df.column("associations"))?
+        .list()?;
 
     let mut rows = Vec::new();
     for i in 0..df.height() {
-        let tags_series = associations
+        let tag_series = tag_col
             .get_as_series(i)
-            .context("Missing associations series")?;
-        let tags_str = tags_series
+            .context("Missing tags series")?;
+        let tags_str = tag_series
             .str()?
             .into_no_null_iter()
             .collect::<Vec<_>>()
@@ -200,14 +226,20 @@ fn render_memories(df: &DataFrame) -> Result<()> {
         });
     }
 
-    println!("\nMemories:");
+    println!("\n{}:", header);
     let mut table = Table::new(rows);
     table.with(Style::rounded());
     println!("{}", table);
     Ok(())
 }
 
-fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &str) -> Result<()> {
+fn render_suggestions(
+    df_syn: DataFrame,
+    df_brain: &DataFrame,
+    found_tags: Series,
+    shown_ids: &HashSet<String>,
+    pattern_stemmed: &str,
+) -> Result<()> {
     let tag_series = found_tags.unique()?;
     let tag_list_series = tag_series.implode()?.into_series();
 
@@ -220,43 +252,83 @@ fn render_suggestions(df_syn: DataFrame, found_tags: Series, pattern_stemmed: &s
         )
         .collect()?;
 
-    if suggestions.height() > 0 {
-        let tag_a = suggestions.column("tag_a")?.str()?;
-        let tag_b = suggestions.column("tag_b")?.str()?;
-        let weights = suggestions.column("weight_log")?.f64()?;
+    if suggestions.height() == 0 {
+        return Ok(());
+    }
 
-        let mut concept_map: HashMap<String, f64> = HashMap::new();
+    let tag_a = suggestions.column("tag_a")?.str()?;
+    let tag_b = suggestions.column("tag_b")?.str()?;
+    let weights = suggestions.column("weight_log")?.f64()?;
 
-        for i in 0..suggestions.height() {
-            let a = tag_a.get(i).unwrap_or_default();
-            let b = tag_b.get(i).unwrap_or_default();
-            let w = weights.get(i).unwrap_or(0.0);
-
-            if a != pattern_stemmed {
-                let entry = concept_map.entry(a.to_string()).or_insert(w);
-                if w > *entry {
-                    *entry = w;
-                }
-            }
-            if b != pattern_stemmed {
-                let entry = concept_map.entry(b.to_string()).or_insert(w);
-                if w > *entry {
-                    *entry = w;
-                }
-            }
+    let mut concept_map: HashMap<String, f64> = HashMap::new();
+    for i in 0..suggestions.height() {
+        let a = tag_a.get(i).unwrap_or_default();
+        let b = tag_b.get(i).unwrap_or_default();
+        let w = weights.get(i).unwrap_or(0.0);
+        if a != pattern_stemmed {
+            let e = concept_map.entry(a.to_string()).or_insert(w);
+            if w > *e { *e = w; }
         }
-
-        let mut sorted_concepts: Vec<_> = concept_map.into_iter().collect();
-        sorted_concepts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        if !sorted_concepts.is_empty() {
-            let concepts: Vec<String> = sorted_concepts
-                .into_iter()
-                .take(5)
-                .map(|(tag, _)| tag)
-                .collect();
-            println!("\nRelated: {}", concepts.join(", "));
+        if b != pattern_stemmed {
+            let e = concept_map.entry(b.to_string()).or_insert(w);
+            if w > *e { *e = w; }
         }
+    }
+
+    let mut sorted_concepts: Vec<_> = concept_map.into_iter().collect();
+    sorted_concepts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top_concepts: Vec<String> = sorted_concepts.into_iter().take(3).map(|(t, _)| t).collect();
+
+    if top_concepts.is_empty() {
+        return Ok(());
+    }
+
+    // For each top concept, fetch related memories not already shown
+    let mut related_rows: Vec<MemoryRow> = Vec::new();
+    let mut seen: HashSet<String> = shown_ids.clone();
+
+    for concept in &top_concepts {
+        let candidates = df_brain
+            .clone()
+            .lazy()
+            .filter(col("associations").list().contains(lit(concept.as_str()), false))
+            .sort(["activation"], SortMultipleOptions::default().with_order_descending(true))
+            .limit(2)
+            .collect()?;
+
+        let contents = candidates.column("content")?.str()?;
+        let ids = candidates.column("id")?.str()?;
+        let tag_col = candidates
+            .column("tags")
+            .or_else(|_| candidates.column("associations"))?
+            .list()?;
+
+        for i in 0..candidates.height() {
+            let id = ids.get(i).unwrap_or_default().to_string();
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.insert(id);
+
+            let content = contents.get(i).unwrap_or_default().to_string();
+            let tags_str = tag_col
+                .get_as_series(i)
+                .map(|s| {
+                    s.str()
+                        .map(|ca| ca.into_no_null_iter().collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+
+            related_rows.push(MemoryRow { content, tags: tags_str });
+        }
+    }
+
+    if !related_rows.is_empty() {
+        println!("\nRelated Memories:");
+        let mut table = Table::new(related_rows);
+        table.with(Style::rounded());
+        println!("{}", table);
     }
 
     Ok(())

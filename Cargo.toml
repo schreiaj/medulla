@@ -18,6 +18,7 @@ tabled = "0.20.0"
 uuid = "1.22.0"
 rust-stemmers = "1.2.0"
 fs2 = "0.4"
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"] }
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -9,7 +9,8 @@ Facts are stored as NDJSON and compiled into Parquet caches. When you query:
 1. Recent memories score higher (ACT-R recency decay)
 2. Frequently accessed memories are boosted (access count reinforcement)
 3. Co-occurring tags build a semantic graph (Hebbian wiring)
-4. Related concepts are surfaced alongside results
+4. Semantically similar memories are found via sentence embeddings (e.g. "octopus disguise" finds "cephalopod camouflage")
+5. Related concepts are surfaced alongside results
 
 ## Install
 
@@ -69,8 +70,8 @@ agent B git pull → med query (auto-recompile) → unified brain
 `med init` writes an `AGENTS.md` into `.medulla/` with the memory protocol. Add it to your agent's context or system prompt.
 
 Key protocol rules for agents:
-- Query with **single keywords** for best results
-- Use the **Related Concepts** table to chain a second query
+- Query with natural language phrases or single keywords — semantic search handles both
+- Use the **Related Concepts** table to chain a second query for deeper recall
 - Record new findings with `med learn` during a session
 - Run `med think` then `med commit` at the end of a session to persist and share knowledge
 
@@ -88,6 +89,8 @@ data file intended for git — it is the stable, shareable export of the brain.
 | `.medulla/musings.ndjson` | Raw fact log with ACT-R metadata | No |
 | `.medulla/brain.parquet` | Ranked fact cache | No |
 | `.medulla/synapses.parquet` | Tag association graph | No |
+| `.medulla/embeddings.parquet` | Sentence embedding cache | No |
+| `.medulla/.cache` | Downloaded embedding model | No |
 
 ## License
 

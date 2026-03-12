@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use med::commands::{commit, init, learn, query, think};
+use med::commands::{commit, embed, init, learn, query, think};
 use polars::prelude::*;
 use std::fs;
 use std::io::Write;
@@ -410,7 +410,7 @@ fn test_query_triggers_recompile_on_brain_ndjson_drift() {
     fs::write(root.join("brain.ndjson"), format!("{}\n", git_entry)).unwrap();
 
     // 4. Query — staleness check should detect the newer brain.ndjson and recompile
-    query::run_in(root, "git pull", 5).unwrap();
+    query::run_in(root, "git pull", 5, 0.70).unwrap();
 
     // 5. brain.parquet must now contain the git-pulled entry
     let mut file = fs::File::open(root.join(".medulla/brain.parquet")).unwrap();
@@ -480,6 +480,119 @@ fn test_learn_merges_with_existing_brain_ndjson() {
     );
 }
 
+// --- Embedding tests ---
+
+#[test]
+fn test_cosine_similarity_identical_vectors() {
+    let v = vec![1.0f32, 2.0, 3.0];
+    let sim = embed::cosine_similarity(&v, &v);
+    assert!((sim - 1.0).abs() < 1e-6, "identical vectors should have sim=1.0, got {}", sim);
+}
+
+#[test]
+fn test_cosine_similarity_orthogonal_vectors() {
+    let a = vec![1.0f32, 0.0, 0.0];
+    let b = vec![0.0f32, 1.0, 0.0];
+    let sim = embed::cosine_similarity(&a, &b);
+    assert!(sim.abs() < 1e-6, "orthogonal vectors should have sim=0.0, got {}", sim);
+}
+
+#[test]
+fn test_cosine_similarity_zero_vector() {
+    let a = vec![0.0f32, 0.0, 0.0];
+    let b = vec![1.0f32, 2.0, 3.0];
+    let sim = embed::cosine_similarity(&a, &b);
+    assert_eq!(sim, 0.0, "zero vector should return 0.0 without panic");
+}
+
+#[test]
+fn test_embeddings_parquet_roundtrip() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("test.parquet");
+
+    let ids = Series::new("id".into(), &["a", "b"]);
+    let emb1 = Series::new("".into(), &[0.1f32, 0.2, 0.3]);
+    let emb2 = Series::new("".into(), &[0.4f32, 0.5, 0.6]);
+    let embedding_series: Series =
+        ListChunked::from_iter(vec![emb1, emb2].into_iter())
+            .into_series()
+            .with_name("embedding".into());
+
+    let n = 2usize;
+    let id_col: Column = ids.into();
+    let emb_col: Column = embedding_series.into();
+    let mut df = DataFrame::new(n, vec![id_col, emb_col]).unwrap();
+
+    let mut f = fs::File::create(&path).unwrap();
+    ParquetWriter::new(&mut f).finish(&mut df).unwrap();
+    drop(f);
+
+    let mut f2 = fs::File::open(&path).unwrap();
+    let df2 = ParquetReader::new(&mut f2).finish().unwrap();
+
+    assert_eq!(df2.height(), 2);
+    let list_col = df2.column("embedding").unwrap().list().unwrap();
+    let row0: Vec<f32> = list_col.get_as_series(0).unwrap().f32().unwrap().into_no_null_iter().collect();
+    assert!((row0[0] - 0.1f32).abs() < 1e-6);
+}
+
+#[test]
+fn test_find_similar_returns_empty_without_embeddings_file() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    let result = embed::find_similar(root, "some query", 10, 0.70).unwrap();
+    assert!(result.is_empty(), "should return empty vec when no embeddings file exists");
+}
+
+#[test]
+#[ignore]
+fn test_update_embeddings_is_incremental() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    learn::run_in(root, "The sky is blue.", vec!["sky".into()], None).unwrap();
+    think::run_in(root).unwrap();
+
+    // Count rows after first run
+    let path = root.join(".medulla/embeddings.parquet");
+    let row_count_1 = {
+        let mut f = fs::File::open(&path).unwrap();
+        ParquetReader::new(&mut f).finish().unwrap().height()
+    };
+
+    // Run think again — no new entries, should not duplicate
+    think::run_in(root).unwrap();
+    let row_count_2 = {
+        let mut f = fs::File::open(&path).unwrap();
+        ParquetReader::new(&mut f).finish().unwrap().height()
+    };
+
+    assert_eq!(row_count_1, row_count_2, "second think should not duplicate embeddings");
+}
+
+#[test]
+#[ignore]
+fn test_semantic_query_finds_related_content() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    learn::run_in(
+        root,
+        "The octopus can camouflage by changing skin texture.",
+        vec!["cephalopod".into()],
+        None,
+    )
+    .unwrap();
+    think::run_in(root).unwrap();
+
+    let ids = embed::find_similar(root, "octopus disguise", 10, 0.50).unwrap();
+    assert!(!ids.is_empty(), "semantic search should find the cephalopod entry");
+}
+
 #[test]
 fn test_query_reinforces_memory() {
     use med::commands::{init, learn, query};
@@ -517,7 +630,7 @@ fn test_query_reinforces_memory() {
     // 4. Query the fact
     // (Because brain.parquet doesn't exist yet, query::run_in will automatically
     // trigger think::run_in, run the search, and then reinforce the NDJSON)
-    query::run_in(root, "robot", 5).unwrap();
+    query::run_in(root, "robot", 5, 0.70).unwrap();
 
     // 5. Verify the cognitive weights shifted
     let final_content = fs::read_to_string(&musings_path).unwrap();

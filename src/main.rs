@@ -44,6 +44,10 @@ enum Commands {
         /// Number of results to return
         #[arg(short, long, default_value_t = 5)]
         limit: usize,
+
+        /// Minimum cosine similarity threshold for semantic search (0.0–1.0)
+        #[arg(long, default_value_t = 0.70)]
+        threshold: f32,
     },
 
     /// Export a clean, git-friendly brain.ndjson snapshot
@@ -77,8 +81,8 @@ fn main() -> Result<()> {
             commands::think::run()?;
         }
 
-        Commands::Query { text, limit } => {
-            med::commands::query::run(&text, limit)?;
+        Commands::Query { text, limit, threshold } => {
+            med::commands::query::run(&text, limit, threshold)?;
         }
 
         Commands::Commit => {
