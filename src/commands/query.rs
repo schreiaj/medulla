@@ -20,6 +20,8 @@ struct MemoryRow {
     content: String,
     #[tabled(rename = "Tags")]
     tags: String,
+    #[tabled(rename = "Source")]
+    source: String,
 }
 
 pub fn run(pattern: &str, limit: usize, threshold: f32) -> Result<()> {
@@ -205,6 +207,7 @@ fn render_memories(df: &DataFrame, header: &str) -> Result<()> {
         .column("tags")
         .or_else(|_| df.column("associations"))?
         .list()?;
+    let source_col = df.column("source").ok();
 
     let mut rows = Vec::new();
     for i in 0..df.height() {
@@ -217,12 +220,19 @@ fn render_memories(df: &DataFrame, header: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let source = source_col
+            .and_then(|col| col.str().ok())
+            .and_then(|ca| ca.get(i))
+            .unwrap_or("—")
+            .to_string();
+
         rows.push(MemoryRow {
             content: contents
                 .get(i)
                 .context("Missing content value")?
                 .to_string(),
             tags: tags_str,
+            source,
         });
     }
 
@@ -302,6 +312,7 @@ fn render_suggestions(
             .column("tags")
             .or_else(|_| candidates.column("associations"))?
             .list()?;
+        let source_col = candidates.column("source").ok();
 
         for i in 0..candidates.height() {
             let id = ids.get(i).unwrap_or_default().to_string();
@@ -319,8 +330,13 @@ fn render_suggestions(
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
+            let source = source_col
+                .and_then(|col| col.str().ok())
+                .and_then(|ca| ca.get(i))
+                .unwrap_or("—")
+                .to_string();
 
-            related_rows.push(MemoryRow { content, tags: tags_str });
+            related_rows.push(MemoryRow { content, tags: tags_str, source });
         }
     }
 

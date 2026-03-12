@@ -29,7 +29,7 @@ fn test_learn_encodes_valid_json() {
 
     // Use root words that the stemmer will leave alone
     let tags = vec!["robot".to_string(), "metal".to_string()];
-    learn::run_in(root, "Validating JSON encoding.", tags, None).unwrap();
+    learn::run_in(root, "Validating JSON encoding.", tags, None, None).unwrap();
 
     let musings_path = root.join(".medulla/musings.ndjson");
     let musings_content = std::fs::read_to_string(musings_path).unwrap();
@@ -50,8 +50,8 @@ fn test_think_generates_parquet_with_activation() {
     med::commands::init::run_in(root).unwrap();
 
     // Learn two things
-    med::commands::learn::run_in(root, "Entry 1", vec!["tag1".into()], None).unwrap();
-    med::commands::learn::run_in(root, "Entry 2", vec!["tag2".into()], None).unwrap();
+    med::commands::learn::run_in(root, "Entry 1", vec!["tag1".into()], None, None).unwrap();
+    med::commands::learn::run_in(root, "Entry 2", vec!["tag2".into()], None, None).unwrap();
 
     // Run think
     med::commands::think::run_in(root).expect("Think failed");
@@ -81,10 +81,10 @@ fn test_think_deduplicates_updates() {
     let id = Some("fixed-id-123".to_string());
 
     // First version of the thought
-    learn::run_in(root, "Version 1", vec![], id.clone()).unwrap();
+    learn::run_in(root, "Version 1", vec![], id.clone(), None).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1100));
     // Second version (Update)
-    learn::run_in(root, "Version 2", vec![], id.clone()).unwrap();
+    learn::run_in(root, "Version 2", vec![], id.clone(), None).unwrap();
 
     think::run_in(root).unwrap();
 
@@ -105,10 +105,10 @@ fn test_act_r_activation_sorting() {
     init::run_in(root).unwrap();
 
     // 1. Learn something "old" (we'll simulate time by sleeping or just letting it exist)
-    learn::run_in(root, "Old Memory", vec![], None).unwrap();
+    learn::run_in(root, "Old Memory", vec![], None, None).unwrap();
 
     // 2. Learn something "new"
-    learn::run_in(root, "New Memory", vec![], None).unwrap();
+    learn::run_in(root, "New Memory", vec![], None, None).unwrap();
 
     think::run_in(root).unwrap();
 
@@ -139,8 +139,8 @@ fn test_hebbian_association_strengthening() {
     init::run_in(root).unwrap();
 
     let tags = vec!["robotics".to_string(), "octopus".to_string()];
-    learn::run_in(root, "Memory 1", tags.clone(), None).unwrap();
-    learn::run_in(root, "Memory 2", tags.clone(), None).unwrap();
+    learn::run_in(root, "Memory 1", tags.clone(), None, None).unwrap();
+    learn::run_in(root, "Memory 2", tags.clone(), None, None).unwrap();
 
     // Think handles the reconstruction
     think::run_in(root).unwrap();
@@ -174,8 +174,8 @@ fn test_hebbian_reconstruction_from_musings() {
 
     // 1. Learn two separate memories sharing tags
     let tags = vec!["robotics".to_string(), "octopus".to_string()];
-    learn::run_in(root, "Octopus soft robotics.", tags.clone(), None).unwrap();
-    learn::run_in(root, "Octopus robot chassis.", tags.clone(), None).unwrap();
+    learn::run_in(root, "Octopus soft robotics.", tags.clone(), None, None).unwrap();
+    learn::run_in(root, "Octopus robot chassis.", tags.clone(), None, None).unwrap();
 
     // 2. Think (This now reconstructs from musings.ndjson)
     think::run_in(root).unwrap();
@@ -205,10 +205,10 @@ fn test_full_cognitive_loop_octopus_robotics() {
 
     // 1. Learn two related facts
     let tags1 = vec!["octopus".to_string(), "silicone".to_string()];
-    learn::run_in(root, "Octopus tentacles use silicone.", tags1, None).unwrap();
+    learn::run_in(root, "Octopus tentacles use silicone.", tags1, None, None).unwrap();
 
     let tags2 = vec!["robotics".to_string(), "silicone".to_string()];
-    learn::run_in(root, "Robotics joints use silicone.", tags2, None).unwrap();
+    learn::run_in(root, "Robotics joints use silicone.", tags2, None, None).unwrap();
 
     // 2. Think (Consolidate + Hebbian Weighting)
     think::run_in(root).unwrap();
@@ -310,9 +310,9 @@ fn test_commit_deduplicates_and_strips_metadata() {
 
     // Learn two distinct entries plus a duplicate (same id) to test dedup
     let id = Some("fixed-commit-id".to_string());
-    learn::run_in(root, "Version 1", vec!["alpha".into()], id.clone()).unwrap();
-    learn::run_in(root, "Version 2", vec!["beta".into()], id.clone()).unwrap();
-    learn::run_in(root, "Another fact", vec!["gamma".into()], None).unwrap();
+    learn::run_in(root, "Version 1", vec!["alpha".into()], id.clone(), None).unwrap();
+    learn::run_in(root, "Version 2", vec!["beta".into()], id.clone(), None).unwrap();
+    learn::run_in(root, "Another fact", vec!["gamma".into()], None, None).unwrap();
 
     commit::run_in(root).unwrap();
 
@@ -372,7 +372,7 @@ fn test_commit_idempotent() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     init::run_in(root).unwrap();
-    learn::run_in(root, "Stable fact", vec!["tag".into()], None).unwrap();
+    learn::run_in(root, "Stable fact", vec!["tag".into()], None, None).unwrap();
 
     commit::run_in(root).unwrap();
     let first = fs::read_to_string(root.join("brain.ndjson")).unwrap();
@@ -395,7 +395,7 @@ fn test_query_triggers_recompile_on_brain_ndjson_drift() {
     init::run_in(root).unwrap();
 
     // 1. Learn a local fact and build the initial brain.parquet
-    learn::run_in(root, "local baseline", vec!["local".into()], None).unwrap();
+    learn::run_in(root, "local baseline", vec!["local".into()], None, None).unwrap();
     think::run_in(root).unwrap();
 
     // 2. Pause so the next file write has a strictly later mtime
@@ -447,7 +447,7 @@ fn test_learn_merges_with_existing_brain_ndjson() {
     fs::write(root.join("brain.ndjson"), format!("{}\n", committed_entry)).unwrap();
 
     // 2. Learn a brand-new local fact (not yet in brain.ndjson)
-    learn::run_in(root, "newly learned fact", vec!["fresh".into()], None).unwrap();
+    learn::run_in(root, "newly learned fact", vec!["fresh".into()], None, None).unwrap();
 
     // 3. think should overlay brain.ndjson on top of musings and compile both
     think::run_in(root).unwrap();
@@ -553,7 +553,7 @@ fn test_update_embeddings_is_incremental() {
     let root = dir.path();
     init::run_in(root).unwrap();
 
-    learn::run_in(root, "The sky is blue.", vec!["sky".into()], None).unwrap();
+    learn::run_in(root, "The sky is blue.", vec!["sky".into()], None, None).unwrap();
     think::run_in(root).unwrap();
 
     // Count rows after first run
@@ -585,6 +585,7 @@ fn test_semantic_query_finds_related_content() {
         "The octopus can camouflage by changing skin texture.",
         vec!["cephalopod".into()],
         None,
+        None,
     )
     .unwrap();
     think::run_in(root).unwrap();
@@ -610,7 +611,7 @@ fn test_query_reinforces_memory() {
 
     // 2. Learn a new fact
     let tags = vec!["robot".to_string()];
-    learn::run_in(root, "Testing the memory reinforcement loop.", tags, None).unwrap();
+    learn::run_in(root, "Testing the memory reinforcement loop.", tags, None, None).unwrap();
 
     let musings_path = root.join(".medulla/musings.ndjson");
 

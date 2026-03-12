@@ -92,6 +92,7 @@ fn build_canonical_entries(root: &Path, now_ms: i64) -> Result<Vec<MemoryEntry>>
 
                 let stemmer = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
                 let stems: Vec<String> = tags.iter().map(|t| stemmer.stem(t).to_string()).collect();
+                let source = stateless["source"].as_str().map(String::from);
 
                 if let Some(existing) = map.get_mut(&id) {
                     // Git is the source of truth for facts — update text and tags
@@ -99,6 +100,7 @@ fn build_canonical_entries(root: &Path, now_ms: i64) -> Result<Vec<MemoryEntry>>
                     existing.content = content;
                     existing.tags = tags;
                     existing.associations = stems;
+                    existing.source = source;
                 } else {
                     // New entry from a teammate via git pull — rehydrate with default metadata.
                     map.insert(
@@ -108,6 +110,7 @@ fn build_canonical_entries(root: &Path, now_ms: i64) -> Result<Vec<MemoryEntry>>
                             content,
                             tags,
                             associations: stems,
+                            source,
                             timestamp: now_ms,
                             access_count: 1,
                             last_access: now_ms,

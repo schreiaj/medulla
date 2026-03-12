@@ -14,6 +14,9 @@ pub struct MemoryEntry {
     pub tags: Vec<String>,
     /// Stemmed forms of tags — used as Hebbian graph keys.
     pub associations: Vec<String>,
+    /// Optional citation string for agents to reference the origin of a fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default)]
     pub access_count: u32,
     #[serde(default)]

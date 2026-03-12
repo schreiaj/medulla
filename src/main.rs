@@ -31,6 +31,10 @@ enum Commands {
         /// Optional: specific ID (if updating an existing fact)
         #[arg(short, long)]
         id: Option<String>,
+
+        /// Optional: citation source for the fact (URL, document name, etc.)
+        #[arg(short, long)]
+        source: Option<String>,
     },
 
     /// Compile logs into the high-performance Parquet cache using ACT-R logic
@@ -73,8 +77,8 @@ fn main() -> Result<()> {
             commands::init::run()?;
         }
 
-        Commands::Learn { content, tags, id } => {
-            commands::learn::run(&content, tags, id)?;
+        Commands::Learn { content, tags, id, source } => {
+            commands::learn::run(&content, tags, id, source)?;
         }
 
         Commands::Think => {

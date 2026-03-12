@@ -19,6 +19,7 @@ pub fn run_in(
     content: &str,
     tags: Vec<String>,
     custom_id: Option<String>,
+    source: Option<String>,
 ) -> Result<()> {
     if content.trim().is_empty() {
         bail!("Content cannot be empty");
@@ -68,6 +69,7 @@ pub fn run_in(
         timestamp: now_ms,
         tags: original_tags,
         associations: stemmed_tags,
+        source,
         access_count: 0,
         last_access: now_ms,
     };
@@ -86,8 +88,8 @@ pub fn run_in(
     Ok(())
 }
 
-pub fn run(content: &str, tags: Vec<String>, id: Option<String>) -> Result<()> {
-    run_in(Path::new("."), content, tags, id)?;
+pub fn run(content: &str, tags: Vec<String>, id: Option<String>, source: Option<String>) -> Result<()> {
+    run_in(Path::new("."), content, tags, id, source)?;
     println!("✔ Memory encoded.");
     Ok(())
 }
