@@ -85,6 +85,7 @@
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
               (rust-bin.stable.latest.default.override { extensions = ["rust-src" "rust-analyzer"]; })
+              python3
             ];
 
             # ort uses load-dynamic: point it at the prebuilt dylib fetched above.
@@ -99,23 +100,23 @@
           # Prebuilt release binaries — statically linked ORT, no compile step.
           # Update medVersion and hashes after each release:
           #   delete the sha256 values, run `nix build`, let Nix print the correct hashes.
-          medVersion = "0.1.0";
+          medVersion = "0.1.1";
           medBinaryInfo = {
             "aarch64-darwin" = {
               archive = "med-aarch64-apple-darwin.tar.gz";
-              sha256  = "sha256-td+Ltes1r22X9Q6sM5Uy9ZbASRo9G52gbhyI3KzKYxk=";
+              sha256  = "sha256-qVPX64DFHq2HP969g4YW+HT5iEM1cTaVvAaD4bTr+Ts=";
             };
             "x86_64-darwin" = {
               archive = "med-x86_64-apple-darwin.tar.gz";
-              sha256  = "sha256-YxD+RXlTo4SSYC6uMdAoonO9SCl5nX9cy6T33qH4HpY=";
+              sha256  = "sha256-6QbWhAIrjQgCiL1qN+DuFK/QoIFbJaxCHnP3Re5Q1ac=";
             };
             "x86_64-linux" = {
               archive = "med-x86_64-unknown-linux-gnu.tar.gz";
-              sha256  = "sha256-COwaAiFGmxUnHe2H9HL9t6Y9KIB9NF1mdTmUajQp3mo=";
+              sha256  = "sha256-75WSSh1HMvfjr+och11sW+C90Cw5xRVQ4Y+Fr5q6qoI=";
             };
             "aarch64-linux" = {
               archive = "med-aarch64-unknown-linux-gnu.tar.gz";
-              sha256  = "sha256-4FGkhY8IU6Jdr90/F+mqeEoIIwzkXfeltf7C0Cfy/rI=";
+              sha256  = "sha256-kpPbidoevAnAUVzIfl9/JdUnGGmDe6i3ocSiNc8wI8c=";
             };
           };
           info = medBinaryInfo.${system};
