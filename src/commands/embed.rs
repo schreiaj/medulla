@@ -8,6 +8,39 @@ use std::sync::Mutex;
 
 static EMBEDDER: Mutex<Option<TextEmbedding>> = Mutex::new(None);
 
+/// Locate the ONNX Runtime shared library without touching any ort code.
+///
+/// Checks (in order):
+///   1. ORT_DYLIB_PATH env var (set by `nix develop` shellHook or the user)
+///   2. Common Homebrew / system install paths
+///
+/// Returns the path string so the caller can set ORT_DYLIB_PATH before the
+/// first ort call, ensuring ort's LazyLock finds the library without panicking.
+fn find_ort_dylib() -> Option<String> {
+    if let Ok(p) = std::env::var("ORT_DYLIB_PATH") {
+        if !p.is_empty() && std::path::Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &[
+        "/opt/homebrew/lib/libonnxruntime.dylib",
+        "/usr/local/lib/libonnxruntime.dylib",
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let candidates: &[&str] = &[
+        "/usr/lib/libonnxruntime.so",
+        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
+        "/usr/local/lib/libonnxruntime.so",
+    ];
+
+    candidates
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .map(|p| p.to_string())
+}
+
 fn build_execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
     use ort::execution_providers::CPUExecutionProvider;
 
@@ -51,20 +84,51 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn embed_texts(root: &Path, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
-    let mut guard = EMBEDDER.lock().unwrap();
+    // Recover from a poisoned mutex (e.g. a panic in a previous init attempt).
+    let mut guard = EMBEDDER.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
+        // Locate the dylib BEFORE calling any ort code.  ort's load-dynamic
+        // feature stores the library handle in a LazyLock; if the dylib is
+        // missing the initializer panics inside that LazyLock, which can call
+        // abort() before catch_unwind can intervene.  By pre-checking we return
+        // a clean Err instead of crashing.
+        let dylib = find_ort_dylib().ok_or_else(|| {
+            anyhow::anyhow!(
+                "ONNX Runtime library not found (semantic search disabled).\n\
+                 Install it with `brew install onnxruntime` (macOS) or your\n\
+                 distro's package manager, then set:\n\
+                 \n\
+                 export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib\n\
+                 \n\
+                 Or point ORT_DYLIB_PATH at wherever libonnxruntime is installed."
+            )
+        })?;
+
+        // Ensure ORT_DYLIB_PATH is set so ort's LazyLock resolves the right path.
+        // SAFETY: called under the EMBEDDER mutex (single-threaded init path) and
+        // before any ort library code runs, so no concurrent env reads exist.
+        unsafe { std::env::set_var("ORT_DYLIB_PATH", &dylib) };
+
         println!("[MED] Initializing embedding model (first run downloads ~23MB)...");
         let cache_dir = root.join(".medulla/.cache");
         std::fs::create_dir_all(&cache_dir)?;
-        *guard = Some(
+        // catch_unwind as a final safety net in case ort panics for other reasons.
+        let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             TextEmbedding::try_new(
                 InitOptions::new(EmbeddingModel::AllMiniLML6V2)
                     .with_cache_dir(cache_dir)
                     .with_show_download_progress(true)
                     .with_execution_providers(build_execution_providers()),
             )
-            .context("Failed to initialize embedding model")?,
-        );
+        }));
+        match init_result {
+            Ok(Ok(embedder)) => *guard = Some(embedder),
+            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to initialize embedding model: {}", e)),
+            Err(_) => return Err(anyhow::anyhow!(
+                "ONNX Runtime failed to load from '{dylib}'. \
+                 Check that the file is a valid libonnxruntime shared library."
+            )),
+        }
     }
     guard
         .as_mut()

@@ -45,7 +45,9 @@ pub fn run_in(root: &Path) -> Result<()> {
     println!("[MED] Updating Hebbian synapses... ({:.1}s)", t.elapsed().as_secs_f32());
     update_synapses(root, now_ms, &canonical)?;
     println!("[MED] Updating embeddings... ({:.1}s)", t.elapsed().as_secs_f32());
-    crate::commands::embed::update_embeddings(root, &canonical)?;
+    if let Err(e) = crate::commands::embed::update_embeddings(root, &canonical) {
+        eprintln!("[MED] Warning: embedding update skipped: {}", e);
+    }
     println!("[MED] Done. ({:.1}s total)", t.elapsed().as_secs_f32());
     Ok(())
 }

@@ -23,17 +23,29 @@
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
               (rust-bin.stable.latest.default.override { extensions = ["rust-src" "rust-analyzer"]; })
-              onnxruntime
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
-              Foundation
-              Security
-              CoreFoundation
-            ]);
+            ];
 
-            # Point ort-sys at the system onnxruntime so it doesn't try to download
-            # the binary in dev shells either.
-            ORT_LIB_LOCATION = "${pkgs.onnxruntime}/lib";
-            ORT_PREFER_DYNAMIC_LINK = "1";
+            # ort uses load-dynamic: the binary dlopen()s libonnxruntime at runtime.
+            # Set ORT_DYLIB_PATH to your local onnxruntime install, e.g.:
+            #   macOS (Homebrew): /opt/homebrew/lib/libonnxruntime.dylib
+            #   Linux:            /usr/lib/libonnxruntime.so
+            # If unset, ort searches standard library paths automatically.
+            shellHook = ''
+              if [ -z "''${ORT_DYLIB_PATH:-}" ]; then
+                # Auto-detect common install locations
+                for candidate in \
+                    /opt/homebrew/lib/libonnxruntime.dylib \
+                    /usr/local/lib/libonnxruntime.dylib \
+                    /usr/lib/libonnxruntime.so \
+                    /usr/lib/x86_64-linux-gnu/libonnxruntime.so; do
+                  if [ -f "$candidate" ]; then
+                    export ORT_DYLIB_PATH="$candidate"
+                    echo "[med dev] ORT_DYLIB_PATH=$ORT_DYLIB_PATH"
+                    break
+                  fi
+                done
+              fi
+            '';
           };
         });
 
@@ -45,21 +57,9 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
 
-            nativeBuildInputs = with pkgs; [ pkg-config ];
-
-            buildInputs = with pkgs; [ onnxruntime ]
-              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
-                Foundation
-                Security
-                CoreFoundation
-              ]);
-
-            # Use the nixpkgs onnxruntime instead of downloading a binary.
-            # ORT_LIB_LOCATION is checked by ort-sys before attempting any download,
-            # so this works even with the ort-download-binaries Cargo feature enabled.
-            ORT_LIB_LOCATION = "${pkgs.onnxruntime}/lib";
-            ORT_PREFER_DYNAMIC_LINK = "1";
-
+            # ort uses load-dynamic (fastembed's ort-load-dynamic feature):
+            # libonnxruntime is dlopen()ed at runtime — no static linking,
+            # no framework deps, no onnxruntime at build time.
             meta.mainProgram = "med";
           };
           default = self.packages.${system}.med;
