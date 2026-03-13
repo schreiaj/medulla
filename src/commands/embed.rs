@@ -18,9 +18,11 @@ static EMBEDDER: Mutex<Option<TextEmbedding>> = Mutex::new(None);
 /// first ort call, ensuring ort's LazyLock finds the library without panicking.
 fn find_ort_dylib() -> Option<String> {
     if let Ok(p) = std::env::var("ORT_DYLIB_PATH")
-        && !p.is_empty() && std::path::Path::new(&p).exists() {
-            return Some(p);
-        }
+        && !p.is_empty()
+        && std::path::Path::new(&p).exists()
+    {
+        return Some(p);
+    }
 
     #[cfg(target_os = "macos")]
     let candidates: &[&str] = &[
