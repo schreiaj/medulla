@@ -679,3 +679,40 @@ fn test_query_reinforces_memory() {
         final_entry.last_access
     );
 }
+
+/// A multi-word query like "monkey pox" must find entries whose content or
+/// tags contain the compound form "monkeypox".  Previously the entire phrase
+/// was passed to the stemmer as one token, producing "monkey pox" which never
+/// matched the substring "monkeypox" or the exact association "monkeypox".
+#[test]
+fn test_multiword_query_finds_compound_term() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init::run_in(root).unwrap();
+
+    learn::run_in(
+        root,
+        "monkeypox outbreak dataset from WHO surveillance",
+        vec!["monkeypox".into(), "epidemiology".into()],
+        None,
+        None,
+    )
+    .unwrap();
+
+    think::run_in(root).unwrap();
+
+    let musings_path = root.join(".medulla/musings.ndjson");
+    let before: med::core::MemoryEntry =
+        serde_json::from_str(fs::read_to_string(&musings_path).unwrap().trim()).unwrap();
+    assert_eq!(before.access_count, 0, "should start with access_count 0");
+
+    // Two-word query that only matches via substring/token split
+    query::run_in(root, "monkey pox", 5, 0.70).unwrap();
+
+    let after: med::core::MemoryEntry =
+        serde_json::from_str(fs::read_to_string(&musings_path).unwrap().trim()).unwrap();
+    assert_eq!(
+        after.access_count, 1,
+        "multi-word query 'monkey pox' should have found and reinforced the 'monkeypox' entry"
+    );
+}

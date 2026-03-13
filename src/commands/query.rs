@@ -48,10 +48,11 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize, threshold: f32) -> Resul
             .unwrap_or(SystemTime::UNIX_EPOCH)
     };
 
-    let embeddings_path = root.join(".medulla/embeddings.parquet");
-
+    // Embeddings are best-effort — their absence doesn't indicate stale data,
+    // only that semantic search hasn't been set up yet (ORT not installed).
+    // Excluding embeddings_path from the staleness check prevents an infinite
+    // recompile loop when ORT is unavailable.
     let needs_update = !brain_path.exists()
-        || !embeddings_path.exists()
         || get_mtime(&musings_path) > get_mtime(&brain_path)
         || get_mtime(&public_ndjson) > get_mtime(&brain_path);
 
@@ -64,24 +65,49 @@ pub fn run_in(root: &Path, pattern: &str, limit: usize, threshold: f32) -> Resul
     let df_brain = ParquetReader::new(&mut file).finish()?;
 
     let pattern_lowered = pattern.to_lowercase();
-    let pattern_stemmed = EN_STEMMER
-        .get_or_init(|| Stemmer::create(Algorithm::English))
-        .stem(&pattern_lowered)
-        .to_string();
+    let stemmer = EN_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
+    let pattern_stemmed = stemmer.stem(&pattern_lowered).to_string();
+
+    // Stem each whitespace-separated word individually so that a multi-word
+    // query like "monkey pox" also matches the compound form "monkeypox".
+    // The full-phrase stem is always included so exact single-token queries
+    // continue to work as before.
+    let mut query_stems: Vec<String> = pattern_lowered
+        .split_whitespace()
+        .map(|w| stemmer.stem(w).to_string())
+        .collect();
+    if !query_stems.contains(&pattern_stemmed) {
+        query_stems.push(pattern_stemmed.clone());
+    }
 
     // 2. Search Logic — collect once, slice for display
-    // Semantic expansion — degrade gracefully if embeddings unavailable
+    // Semantic expansion — warn explicitly if unavailable so users aren't
+    // silently dropped to keyword-only search without knowing it.
     let semantic_ids: Vec<String> =
-        crate::commands::embed::find_similar(root, pattern, 10, threshold).unwrap_or_default();
+        match crate::commands::embed::find_similar(root, pattern, 10, threshold) {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("[MED] Note: semantic search unavailable — {}", e);
+                Vec::new()
+            }
+        };
 
-    let base_filter = col("content")
-        .str()
-        .to_lowercase()
-        .str()
-        .contains(lit(pattern_stemmed.clone()), false)
-        .or(col("associations")
-            .list()
-            .contains(lit(pattern_stemmed.clone()), false));
+    // Build an OR filter over every stemmed token for both content (substring)
+    // and associations (exact list element).
+    let base_filter = query_stems
+        .iter()
+        .map(|stem| {
+            col("content")
+                .str()
+                .to_lowercase()
+                .str()
+                .contains(lit(stem.clone()), false)
+                .or(col("associations")
+                    .list()
+                    .contains(lit(stem.clone()), false))
+        })
+        .reduce(|a, b| a.or(b))
+        .expect("query_stems is never empty");
 
     let combined_filter = if semantic_ids.is_empty() {
         base_filter

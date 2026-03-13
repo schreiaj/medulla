@@ -38,13 +38,26 @@ pub fn run_in(root: &Path) -> Result<()> {
     let t = std::time::Instant::now();
     println!("[MED] Loading memories...");
     let canonical = build_canonical_entries(root, now_ms)?;
-    println!("[MED] Compacting memory store ({} entries)... ({:.1}s)", canonical.len(), t.elapsed().as_secs_f32());
+    println!(
+        "[MED] Compacting memory store ({} entries)... ({:.1}s)",
+        canonical.len(),
+        t.elapsed().as_secs_f32()
+    );
     compact_musings(root, &canonical)?;
-    println!("[MED] Consolidating ACT-R model... ({:.1}s)", t.elapsed().as_secs_f32());
+    println!(
+        "[MED] Consolidating ACT-R model... ({:.1}s)",
+        t.elapsed().as_secs_f32()
+    );
     consolidate_entries(root, now_ms, &canonical)?;
-    println!("[MED] Updating Hebbian synapses... ({:.1}s)", t.elapsed().as_secs_f32());
+    println!(
+        "[MED] Updating Hebbian synapses... ({:.1}s)",
+        t.elapsed().as_secs_f32()
+    );
     update_synapses(root, now_ms, &canonical)?;
-    println!("[MED] Updating embeddings... ({:.1}s)", t.elapsed().as_secs_f32());
+    println!(
+        "[MED] Updating embeddings... ({:.1}s)",
+        t.elapsed().as_secs_f32()
+    );
     if let Err(e) = crate::commands::embed::update_embeddings(root, &canonical) {
         eprintln!("[MED] Warning: embedding update skipped: {}", e);
     }
@@ -264,12 +277,15 @@ pub fn update_synapses(root: &Path, now_ms: i64, canonical: &[MemoryEntry]) -> R
     }
 
     let n = pairs.len();
-    let mut final_synapses = DataFrame::new(n, vec![
-        Series::new("tag_a".into(), tag_a_col).into(),
-        Series::new("tag_b".into(), tag_b_col).into(),
-        Series::new("weight_log".into(), weight_col).into(),
-        Series::new("last_seen".into(), last_seen_col).into(),
-    ])?;
+    let mut final_synapses = DataFrame::new(
+        n,
+        vec![
+            Series::new("tag_a".into(), tag_a_col).into(),
+            Series::new("tag_b".into(), tag_b_col).into(),
+            Series::new("weight_log".into(), weight_col).into(),
+            Series::new("last_seen".into(), last_seen_col).into(),
+        ],
+    )?;
 
     let syn_tmp = synapses_path.with_extension("tmp");
     let mut file = File::create(&syn_tmp)?;

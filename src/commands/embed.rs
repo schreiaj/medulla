@@ -17,11 +17,10 @@ static EMBEDDER: Mutex<Option<TextEmbedding>> = Mutex::new(None);
 /// Returns the path string so the caller can set ORT_DYLIB_PATH before the
 /// first ort call, ensuring ort's LazyLock finds the library without panicking.
 fn find_ort_dylib() -> Option<String> {
-    if let Ok(p) = std::env::var("ORT_DYLIB_PATH") {
-        if !p.is_empty() && std::path::Path::new(&p).exists() {
+    if let Ok(p) = std::env::var("ORT_DYLIB_PATH")
+        && !p.is_empty() && std::path::Path::new(&p).exists() {
             return Some(p);
         }
-    }
 
     #[cfg(target_os = "macos")]
     let candidates: &[&str] = &[
@@ -54,7 +53,9 @@ fn build_execution_providers() -> Vec<ort::execution_providers::ExecutionProvide
         #[cfg(target_os = "macos")]
         "coreml" => {
             use ort::execution_providers::CoreMLExecutionProvider;
-            println!("[MED] GPU acceleration: CoreML (Neural Engine + GPU). First run compiles the model and may take several minutes.");
+            println!(
+                "[MED] GPU acceleration: CoreML (Neural Engine + GPU). First run compiles the model and may take several minutes."
+            );
             eps.push(CoreMLExecutionProvider::default().build());
         }
         #[cfg(not(target_os = "macos"))]
@@ -123,11 +124,18 @@ fn embed_texts(root: &Path, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
         }));
         match init_result {
             Ok(Ok(embedder)) => *guard = Some(embedder),
-            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to initialize embedding model: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!(
-                "ONNX Runtime failed to load from '{dylib}'. \
+            Ok(Err(e)) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to initialize embedding model: {}",
+                    e
+                ));
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "ONNX Runtime failed to load from '{dylib}'. \
                  Check that the file is a valid libonnxruntime shared library."
-            )),
+                ));
+            }
         }
     }
     guard
@@ -174,7 +182,7 @@ pub fn update_embeddings(root: &Path, canonical: &[MemoryEntry]) -> Result<()> {
     }
 
     const CHUNK_SIZE: usize = 100;
-    let total_chunks = (new_entries.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let total_chunks = new_entries.len().div_ceil(CHUNK_SIZE);
 
     let mut chunk_dfs: Vec<DataFrame> = Vec::new();
     for (chunk_idx, chunk) in new_entries.chunks(CHUNK_SIZE).enumerate() {

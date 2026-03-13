@@ -14,6 +14,24 @@ Facts are stored as NDJSON and compiled into Parquet caches. When you query:
 
 ## Install
 
+**Pre-built binaries (recommended):**
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/schreiaj/medulla/releases/latest):
+
+| Platform | Archive |
+|----------|---------|
+| macOS (Apple Silicon) | `med-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `med-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `med-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `med-aarch64-unknown-linux-gnu.tar.gz` |
+
+```sh
+tar -xzf med-<platform>.tar.gz
+mv med /usr/local/bin/
+```
+
+Pre-built binaries include the ONNX Runtime statically linked — no extra dependencies required.
+
 **Nix:**
 ```sh
 nix shell github:schreiaj/medulla#med
@@ -21,10 +39,21 @@ nix shell github:schreiaj/medulla#med
 nix profile install github:schreiaj/medulla#med
 ```
 
+The Nix devShell sets up ORT automatically. For semantic search outside a Nix shell,
+set `ORT_DYLIB_PATH` to your `libonnxruntime` install (e.g. `brew install onnxruntime`
+on macOS). Keyword search works without it.
+
 **Cargo:**
 ```sh
 cargo install --git https://github.com/schreiaj/medulla
 ```
+
+> Cargo builds use `ort-load-dynamic` by default and require `libonnxruntime` at runtime.
+> To build a self-contained binary (like the pre-built releases):
+> ```sh
+> cargo install --git https://github.com/schreiaj/medulla \
+>   --no-default-features --features ort-download-binaries
+> ```
 
 ## Usage
 
