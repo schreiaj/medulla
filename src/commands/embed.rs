@@ -8,6 +8,35 @@ use std::sync::Mutex;
 
 static EMBEDDER: Mutex<Option<TextEmbedding>> = Mutex::new(None);
 
+fn build_execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+    use ort::execution_providers::CPUExecutionProvider;
+
+    let accelerator = std::env::var("MED_ACCELERATOR")
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let mut eps = Vec::new();
+
+    match accelerator.as_str() {
+        #[cfg(target_os = "macos")]
+        "coreml" => {
+            use ort::execution_providers::CoreMLExecutionProvider;
+            println!("[MED] GPU acceleration: CoreML (Neural Engine + GPU). First run compiles the model and may take several minutes.");
+            eps.push(CoreMLExecutionProvider::default().build());
+        }
+        #[cfg(not(target_os = "macos"))]
+        "cuda" => {
+            use ort::execution_providers::CUDAExecutionProvider;
+            println!("[MED] GPU acceleration: CUDA.");
+            eps.push(CUDAExecutionProvider::default().build());
+        }
+        _ => {}
+    }
+
+    eps.push(CPUExecutionProvider::default().build());
+    eps
+}
+
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -31,7 +60,8 @@ fn embed_texts(root: &Path, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
             TextEmbedding::try_new(
                 InitOptions::new(EmbeddingModel::AllMiniLML6V2)
                     .with_cache_dir(cache_dir)
-                    .with_show_download_progress(true),
+                    .with_show_download_progress(true)
+                    .with_execution_providers(build_execution_providers()),
             )
             .context("Failed to initialize embedding model")?,
         );
@@ -39,7 +69,7 @@ fn embed_texts(root: &Path, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
     guard
         .as_mut()
         .unwrap()
-        .embed(texts, None)
+        .embed(texts, Some(32))
         .context("Embedding failed")
 }
 
@@ -79,28 +109,46 @@ pub fn update_embeddings(root: &Path, canonical: &[MemoryEntry]) -> Result<()> {
         return Ok(());
     }
 
-    let texts: Vec<&str> = new_entries.iter().map(|e| e.content.as_str()).collect();
-    let new_embeddings = embed_texts(root, texts)?;
+    const CHUNK_SIZE: usize = 100;
+    let total_chunks = (new_entries.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-    let n = new_entries.len();
-    let id_col: Column = Series::new(
-        "id".into(),
-        new_entries
-            .iter()
-            .map(|e| e.id.as_str())
-            .collect::<Vec<_>>(),
-    )
-    .into();
-    let embedding_col: Column = ListChunked::from_iter(
-        new_embeddings
-            .iter()
-            .map(|e| Series::new("".into(), e.as_slice())),
-    )
-    .into_series()
-    .with_name("embedding".into())
-    .into();
+    let mut chunk_dfs: Vec<DataFrame> = Vec::new();
+    for (chunk_idx, chunk) in new_entries.chunks(CHUNK_SIZE).enumerate() {
+        println!(
+            "[MED] Embedding batch {}/{} ({} entries)...",
+            chunk_idx + 1,
+            total_chunks,
+            chunk.len()
+        );
+        let texts: Vec<&str> = chunk.iter().map(|e| e.content.as_str()).collect();
+        let embeddings = embed_texts(root, texts)?;
 
-    let new_df = DataFrame::new(n, vec![id_col, embedding_col])?;
+        let n = chunk.len();
+        let id_col: Column = Series::new(
+            "id".into(),
+            chunk.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+        )
+        .into();
+        let embedding_col: Column = ListChunked::from_iter(
+            embeddings
+                .iter()
+                .map(|e| Series::new("".into(), e.as_slice())),
+        )
+        .into_series()
+        .with_name("embedding".into())
+        .into();
+
+        chunk_dfs.push(DataFrame::new(n, vec![id_col, embedding_col])?);
+        // embeddings Vec is dropped here, freeing memory between chunks
+    }
+
+    let new_df = chunk_dfs
+        .into_iter()
+        .reduce(|mut acc, df| {
+            acc.vstack_mut(&df).expect("vstack failed");
+            acc
+        })
+        .expect("at least one chunk");
 
     let mut merged = match existing_df {
         Some(df) => df.vstack(&new_df)?,

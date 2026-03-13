@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::f64::consts::E;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Cursor};
+use std::io::{BufRead, BufReader, Cursor, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -30,15 +30,39 @@ pub fn run_in(root: &Path) -> Result<()> {
     // Hold a shared lock for the full consolidation to prevent concurrent writes
     // from learn/reinforce_memories corrupting the snapshot we're reading.
     let _lock = if musings_path.exists() {
-        Some(crate::core::lock_musings(&musings_path, false)?)
+        Some(crate::core::lock_musings(&musings_path, true)?)
     } else {
         None
     };
 
+    let t = std::time::Instant::now();
+    println!("[MED] Loading memories...");
     let canonical = build_canonical_entries(root, now_ms)?;
+    println!("[MED] Compacting memory store ({} entries)... ({:.1}s)", canonical.len(), t.elapsed().as_secs_f32());
+    compact_musings(root, &canonical)?;
+    println!("[MED] Consolidating ACT-R model... ({:.1}s)", t.elapsed().as_secs_f32());
     consolidate_entries(root, now_ms, &canonical)?;
+    println!("[MED] Updating Hebbian synapses... ({:.1}s)", t.elapsed().as_secs_f32());
     update_synapses(root, now_ms, &canonical)?;
+    println!("[MED] Updating embeddings... ({:.1}s)", t.elapsed().as_secs_f32());
     crate::commands::embed::update_embeddings(root, &canonical)?;
+    println!("[MED] Done. ({:.1}s total)", t.elapsed().as_secs_f32());
+    Ok(())
+}
+
+/// Write the deduplicated canonical entries back to musings.ndjson atomically,
+/// replacing the potentially unbounded append-only file with a compact snapshot.
+fn compact_musings(root: &Path, canonical: &[MemoryEntry]) -> Result<()> {
+    let musings_path = root.join(".medulla/musings.ndjson");
+    let tmp_path = musings_path.with_extension("tmp");
+    {
+        let mut file = File::create(&tmp_path)?;
+        for entry in canonical {
+            let line = serde_json::to_string(entry)?;
+            writeln!(file, "{}", line)?;
+        }
+    }
+    fs::rename(&tmp_path, &musings_path)?;
     Ok(())
 }
 
@@ -190,56 +214,60 @@ pub fn update_synapses(root: &Path, now_ms: i64, canonical: &[MemoryEntry]) -> R
         return Ok(());
     }
 
-    let explode_sel = Selector::ByName {
-        names: vec!["associations".into()].into(),
-        strict: true,
-    };
-    let explode_opts = ExplodeOptions {
-        empty_as_null: true,
-        keep_nulls: false,
-    };
+    // Accumulate (tag_a, tag_b) co-occurrence pairs directly in Rust — avoids the
+    // O(rows²) intermediate that the Polars self-join produced for entries with many tags.
+    // Key: (tag_a, tag_b) with tag_a < tag_b lexicographically.
+    // Value: (signal_count, last_seen_ms).
+    let mut pairs: HashMap<(String, String), (u64, i64)> = HashMap::new();
 
-    // Materialize once to avoid redundant work during the self-join
-    let base_df = entries_to_df(canonical)?
-        .lazy()
-        .filter(col("associations").list().len().gt(lit(1)))
-        .explode(explode_sel, explode_opts)
-        .collect()?;
+    for entry in canonical {
+        let tags = &entry.associations;
+        if tags.len() < 2 {
+            continue;
+        }
+        for i in 0..tags.len() {
+            for j in (i + 1)..tags.len() {
+                let (a, b) = if tags[i] <= tags[j] {
+                    (tags[i].clone(), tags[j].clone())
+                } else {
+                    (tags[j].clone(), tags[i].clone())
+                };
+                let e = pairs.entry((a, b)).or_insert((0, i64::MIN));
+                e.0 += 1;
+                if entry.timestamp > e.1 {
+                    e.1 = entry.timestamp;
+                }
+            }
+        }
+    }
 
-    let left = base_df
-        .clone()
-        .lazy()
-        .rename(["associations"], ["tag_a"], true);
-
-    let right = base_df.lazy().rename(["associations"], ["tag_b"], true);
+    if pairs.is_empty() {
+        return Ok(());
+    }
 
     let log_inc = (1.0 + LEARNING_RATE).ln();
 
-    let signals = left
-        .join(right, [col("id")], [col("id")], JoinType::Inner.into())
-        .filter(col("tag_a").lt(col("tag_b")))
-        .group_by([col("tag_a"), col("tag_b")])
-        .agg([
-            len().alias("signal_count"),
-            col("timestamp").max().alias("last_seen"),
-        ]);
+    let mut tag_a_col: Vec<&str> = Vec::with_capacity(pairs.len());
+    let mut tag_b_col: Vec<&str> = Vec::with_capacity(pairs.len());
+    let mut weight_col: Vec<f64> = Vec::with_capacity(pairs.len());
+    let mut last_seen_col: Vec<i64> = Vec::with_capacity(pairs.len());
 
-    let mut final_synapses = signals
-        .with_column(
-            ((col("signal_count").cast(DataType::Float64) * lit(log_inc))
-                - (((lit(now_ms) - col("last_seen")).cast(DataType::Float64) / lit(1000.0)
-                    + lit(1.0))
-                .log(lit(E))
-                    * lit(DECAY_RATE)))
-            .alias("weight_log"),
-        )
-        .select([
-            col("tag_a"),
-            col("tag_b"),
-            col("weight_log"),
-            col("last_seen"),
-        ])
-        .collect()?;
+    for ((a, b), (count, last_seen)) in &pairs {
+        let dt = (now_ms - last_seen) as f64 / 1000.0 + 1.0;
+        let weight = (*count as f64 * log_inc) - (dt.ln() * DECAY_RATE);
+        tag_a_col.push(a.as_str());
+        tag_b_col.push(b.as_str());
+        weight_col.push(weight);
+        last_seen_col.push(*last_seen);
+    }
+
+    let n = pairs.len();
+    let mut final_synapses = DataFrame::new(n, vec![
+        Series::new("tag_a".into(), tag_a_col).into(),
+        Series::new("tag_b".into(), tag_b_col).into(),
+        Series::new("weight_log".into(), weight_col).into(),
+        Series::new("last_seen".into(), last_seen_col).into(),
+    ])?;
 
     let syn_tmp = synapses_path.with_extension("tmp");
     let mut file = File::create(&syn_tmp)?;

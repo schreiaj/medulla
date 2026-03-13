@@ -32,6 +32,19 @@ med learn "Your observation here" --tags keyword1,keyword2
 - Tags become association nodes — choose keywords you would query later.
 - Use `--id <name>` to update an existing fact by stable ID.
 
+## GPU Acceleration (optional)
+
+Embedding defaults to CPU. For large corpora, you can enable hardware acceleration:
+
+```bash
+# macOS (Apple Silicon) — uses Neural Engine + GPU via CoreML
+# First run compiles the model (~5 min); subsequent runs use the cached version
+MED_ACCELERATOR=coreml med think
+
+# Linux with NVIDIA GPU
+MED_ACCELERATOR=cuda med think
+```
+
 ## End of Session
 
 ```bash
