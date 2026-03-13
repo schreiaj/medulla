@@ -93,17 +93,70 @@
         });
 
       packages = forAllSystems (system:
-        let pkgs = pkgsFor system; in {
-          med = pkgs.rustPlatform.buildRustPackage {
-            pname = "med";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
+        let
+          pkgs = pkgsFor system;
 
-            # ort uses load-dynamic: no static linking, no ORT at build time.
+          # Prebuilt release binaries — statically linked ORT, no compile step.
+          # Update medVersion and hashes after each release:
+          #   delete the sha256 values, run `nix build`, let Nix print the correct hashes.
+          medVersion = "0.1.0";
+          medBinaryInfo = {
+            "aarch64-darwin" = {
+              archive = "med-aarch64-apple-darwin.tar.gz";
+              sha256  = "sha256-td+Ltes1r22X9Q6sM5Uy9ZbASRo9G52gbhyI3KzKYxk=";
+            };
+            "x86_64-darwin" = {
+              archive = "med-x86_64-apple-darwin.tar.gz";
+              sha256  = "sha256-YxD+RXlTo4SSYC6uMdAoonO9SCl5nX9cy6T33qH4HpY=";
+            };
+            "x86_64-linux" = {
+              archive = "med-x86_64-unknown-linux-gnu.tar.gz";
+              sha256  = "sha256-COwaAiFGmxUnHe2H9HL9t6Y9KIB9NF1mdTmUajQp3mo=";
+            };
+            "aarch64-linux" = {
+              archive = "med-aarch64-unknown-linux-gnu.tar.gz";
+              sha256  = "sha256-4FGkhY8IU6Jdr90/F+mqeEoIIwzkXfeltf7C0Cfy/rI=";
+            };
+          };
+          info = medBinaryInfo.${system};
+        in {
+          med = pkgs.stdenv.mkDerivation {
+            pname = "med";
+            version = medVersion;
+            src = pkgs.fetchurl {
+              url    = "https://github.com/schreiaj/medulla/releases/download/v${medVersion}/${info.archive}";
+              sha256 = info.sha256;
+            };
+            # On Linux/NixOS the binary references glibc at a non-Nix path;
+            # autoPatchelfHook rewrites the dynamic linker and rpath automatically.
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.autoPatchelfHook
+            ];
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.stdenv.cc.libc
+            ];
+            # The tarball contains a bare binary with no wrapping directory.
+            sourceRoot = ".";
+            installPhase = ''
+              mkdir -p $out/bin
+              cp med $out/bin/
+            '';
+            dontBuild  = true;
+            # Let autoPatchelfHook run on Linux; skip fixup on Darwin.
+            dontFixup  = pkgs.stdenv.isDarwin;
             meta.mainProgram = "med";
           };
           default = self.packages.${system}.med;
+
+          # Build from source (useful for development / CI):
+          #   nix build .#med-src
+          med-src = pkgs.rustPlatform.buildRustPackage {
+            pname = "med";
+            version = medVersion;
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            meta.mainProgram = "med";
+          };
         });
     };
 }

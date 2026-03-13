@@ -90,27 +90,26 @@ fn embed_texts(root: &Path, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
     // Recover from a poisoned mutex (e.g. a panic in a previous init attempt).
     let mut guard = EMBEDDER.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
-        // Locate the dylib BEFORE calling any ort code.  ort's load-dynamic
-        // feature stores the library handle in a LazyLock; if the dylib is
-        // missing the initializer panics inside that LazyLock, which can call
-        // abort() before catch_unwind can intervene.  By pre-checking we return
-        // a clean Err instead of crashing.
-        let dylib = find_ort_dylib().ok_or_else(|| {
-            anyhow::anyhow!(
-                "ONNX Runtime library not found (semantic search disabled).\n\
-                 Install it with `brew install onnxruntime` (macOS) or your\n\
-                 distro's package manager, then set:\n\
-                 \n\
-                 export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib\n\
-                 \n\
-                 Or point ORT_DYLIB_PATH at wherever libonnxruntime is installed."
-            )
-        })?;
-
-        // Ensure ORT_DYLIB_PATH is set so ort's LazyLock resolves the right path.
-        // SAFETY: called under the EMBEDDER mutex (single-threaded init path) and
-        // before any ort library code runs, so no concurrent env reads exist.
-        unsafe { std::env::set_var("ORT_DYLIB_PATH", &dylib) };
+        // ort-load-dynamic: locate the dylib BEFORE calling any ort code.
+        // ort's LazyLock panics (possibly abort()) if the dylib is missing, so
+        // we pre-check and return a clean Err instead of crashing.
+        // ort-download-binaries: ORT is statically linked — no dylib needed.
+        #[cfg(feature = "ort-load-dynamic")]
+        {
+            let dylib = find_ort_dylib().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ONNX Runtime library not found (semantic search disabled).\n\
+                     Install it with `brew install onnxruntime` (macOS) or your\n\
+                     distro's package manager, then set:\n\
+                     \n\
+                     export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib\n\
+                     \n\
+                     Or point ORT_DYLIB_PATH at wherever libonnxruntime is installed."
+                )
+            })?;
+            // SAFETY: called under the EMBEDDER mutex before any ort code runs.
+            unsafe { std::env::set_var("ORT_DYLIB_PATH", &dylib) };
+        }
 
         println!("[MED] Initializing embedding model (first run downloads ~23MB)...");
         let cache_dir = root.join(".medulla/.cache");
@@ -134,8 +133,8 @@ fn embed_texts(root: &Path, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "ONNX Runtime failed to load from '{dylib}'. \
-                 Check that the file is a valid libonnxruntime shared library."
+                    "ONNX Runtime panicked during initialization. \
+                     Check that ORT_DYLIB_PATH points to a valid libonnxruntime shared library."
                 ));
             }
         }
